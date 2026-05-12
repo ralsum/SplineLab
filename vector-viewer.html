@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenClaw Vector Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #11192f;
+      --grid: rgba(148, 163, 184, 0.22);
+      --axis: rgba(226, 232, 240, 0.7);
+      --vector: #7dd3fc;
+      --vector-head: #38bdf8;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+    }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(circle at top, #111a33, var(--bg) 55%);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      overflow: hidden;
+    }
+    .shell {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    .titlebar {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .frame-wrap {
+      display: grid;
+      place-items: center;
+      min-height: 0;
+    }
+    .frame {
+      width: min(88vmin, 860px);
+      aspect-ratio: 1 / 1;
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.94));
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 18px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      position: relative;
+      overflow: hidden;
+    }
+    canvas { width: 100%; height: 100%; display: block; }
+    .legend {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--vector); box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.12); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="titlebar">
+      <div>
+        <h1>OpenClaw Vector Viewer</h1>
+        <div class="meta">Cartesian frame with updatable vector overlays</div>
+      </div>
+      <div class="meta" id="vectorCount">1 vector</div>
+    </div>
+
+    <div class="frame-wrap">
+      <div class="frame">
+        <canvas id="canvas"></canvas>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="badge"><span class="dot"></span> vector = origin + heading + length</div>
+      <div class="badge">Current draft: <strong id="draftLabel">(0.0, 0.0, 0.0), L=1.0</strong></div>
+    </div>
+  </div>
+
+  <script>
+    const DATA_URL = './vector-data.json';
+    const state = {
+      vectors: [
+        { x: 0.0, y: 0.0, psi: 0.0, len: 1.0 }
+      ],
+      pad: 0.14,
+      showDirectionVector: true,
+      steeringAngleDeg: 30
+    };
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const vectorCount = document.getElementById('vectorCount');
+    const draftLabel = document.getElementById('draftLabel');
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.round(rect.width * dpr));
+      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      draw();
+    }
+
+    function worldToScreen(x, y, bounds, w, h) {
+      const rangeX = bounds.maxX - bounds.minX;
+      const rangeY = bounds.maxY - bounds.minY;
+      const scale = Math.min(w / rangeX, h / rangeY);
+      const padX = (w - rangeX * scale) / 2;
+      const padY = (h - rangeY * scale) / 2;
+      const sx = padX + (x - bounds.minX) * scale;
+      const sy = h - (padY + (y - bounds.minY) * scale);
+      return [sx, sy];
+    }
+
+    function drawGrid(bounds) {
+      const w = canvas.width, h = canvas.height;
+      const step = chooseStep(bounds);
+      ctx.lineWidth = 1;
+
+      for (let x = Math.ceil(bounds.minX / step) * step; x <= bounds.maxX; x += step) {
+        const [sx] = worldToScreen(x, 0, bounds, w, h);
+        ctx.strokeStyle = Math.abs(x) < 1e-9 ? 'rgba(226,232,240,0.55)' : getComputedStyle(document.documentElement).getPropertyValue('--grid');
+        ctx.beginPath();
+        ctx.moveTo(sx, 0);
+        ctx.lineTo(sx, h);
+        ctx.stroke();
+      }
+      for (let y = Math.ceil(bounds.minY / step) * step; y <= bounds.maxY; y += step) {
+        const [, sy] = worldToScreen(0, y, bounds, w, h);
+        ctx.strokeStyle = Math.abs(y) < 1e-9 ? 'rgba(226,232,240,0.55)' : getComputedStyle(document.documentElement).getPropertyValue('--grid');
+        ctx.beginPath();
+        ctx.moveTo(0, sy);
+        ctx.lineTo(w, sy);
+        ctx.stroke();
+      }
+    }
+
+    function chooseStep(bounds) {
+      return 0.1;
+    }
+
+    function boundsForVectors() {
+      let minX = 0, maxX = 0, minY = 0, maxY = 0;
+      for (const v of state.vectors) {
+        const ex = v.x + Math.cos(v.psi) * v.len;
+        const ey = v.y + Math.sin(v.psi) * v.len;
+        minX = Math.min(minX, v.x, ex);
+        maxX = Math.max(maxX, v.x, ex);
+        minY = Math.min(minY, v.y, ey);
+        maxY = Math.max(maxY, v.y, ey);
+      }
+      const rangeX = Math.max(0.001, maxX - minX);
+      const rangeY = Math.max(0.001, maxY - minY);
+      const padX = Math.max(rangeX * state.pad, 0.3);
+      const padY = Math.max(rangeY * state.pad, 0.3);
+      return { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY };
+    }
+
+    function drawAxes(bounds) {
+      const w = canvas.width, h = canvas.height;
+      const [ox] = worldToScreen(0, 0, bounds, w, h);
+      const [, oy] = worldToScreen(0, 0, bounds, w, h);
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--axis');
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ox, 0);
+      ctx.lineTo(ox, h);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, oy);
+      ctx.lineTo(w, oy);
+      ctx.stroke();
+    }
+
+    function drawArrow(sx, sy, tx, ty, stroke, fill) {
+      const w = canvas.width, h = canvas.height;
+      ctx.strokeStyle = stroke;
+      ctx.fillStyle = fill;
+      ctx.lineWidth = Math.max(2, Math.min(w, h) * 0.006);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      const angle = Math.atan2(ty - sy, tx - sx);
+      const head = Math.max(10, Math.min(w, h) * 0.02);
+      const a1 = angle + Math.PI * 0.85;
+      const a2 = angle - Math.PI * 0.85;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx + Math.cos(a1) * head, ty + Math.sin(a1) * head);
+      ctx.lineTo(tx + Math.cos(a2) * head, ty + Math.sin(a2) * head);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawVector(v, bounds, idx) {
+      const w = canvas.width, h = canvas.height;
+      const [sx, sy] = worldToScreen(v.x, v.y, bounds, w, h);
+      const ex = v.x + Math.cos(v.psi) * v.len;
+      const ey = v.y + Math.sin(v.psi) * v.len;
+      const [tx, ty] = worldToScreen(ex, ey, bounds, w, h);
+
+      drawArrow(sx, sy, tx, ty, getComputedStyle(document.documentElement).getPropertyValue('--vector'), getComputedStyle(document.documentElement).getPropertyValue('--vector-head'));
+
+      ctx.beginPath();
+      ctx.fillStyle = '#e2e8f0';
+      ctx.arc(sx, sy, Math.max(3, Math.min(w, h) * 0.007), 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = `${Math.max(12, Math.min(w, h) * 0.022)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const midX = (sx + tx) / 2;
+      const midY = (sy + ty) / 2;
+      const labelOffset = 12;
+      const perpX = -(ty - sy);
+      const perpY = tx - sx;
+      const perpMag = Math.hypot(perpX, perpY) || 1;
+      const lx = midX + (perpX / perpMag) * labelOffset;
+      const ly = midY + (perpY / perpMag) * labelOffset;
+      ctx.fillText('V', lx, ly);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
+
+    function drawDirectionVector(v, bounds) {
+      if (!state.showDirectionVector) return;
+      const w = canvas.width, h = canvas.height;
+      const [ox, oy] = worldToScreen(v.x, v.y, bounds, w, h);
+      const sx = v.x + Math.cos(v.psi) * v.len;
+      const sy = v.y + Math.sin(v.psi) * v.len;
+      const [startX, startY] = worldToScreen(sx, sy, bounds, w, h);
+      const angleRad = (state.steeringAngleDeg * Math.PI) / 180;
+      const dirLen = 0.1;
+      const dx = sx + Math.cos(v.psi + angleRad) * dirLen;
+      const dy = sy + Math.sin(v.psi + angleRad) * dirLen;
+      const [tx, ty] = worldToScreen(dx, dy, bounds, w, h);
+      drawArrow(startX, startY, tx, ty, '#f59e0b', '#fbbf24');
+      ctx.fillStyle = '#fde68a';
+      ctx.font = `${Math.max(12, Math.min(w, h) * 0.022)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const midX = (startX + tx) / 2;
+      const midY = (startY + ty) / 2;
+      const labelOffset = 12;
+      const perpX = -(ty - startY);
+      const perpY = tx - startX;
+      const perpMag = Math.hypot(perpX, perpY) || 1;
+      const lx = midX + (perpX / perpMag) * labelOffset;
+      const ly = midY + (perpY / perpMag) * labelOffset;
+      ctx.fillText('D', lx, ly);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.beginPath();
+      ctx.fillStyle = '#f8fafc';
+      ctx.arc(ox, oy, Math.max(3, Math.min(w, h) * 0.007), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText('O', ox + 8, oy - 8);
+      ctx.beginPath();
+      ctx.fillStyle = '#e2e8f0';
+      ctx.arc(startX, startY, Math.max(3, Math.min(w, h) * 0.007), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText('S', startX + 8, startY - 8);
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = `${Math.max(11, Math.min(w, h) * 0.018)}px sans-serif`;
+      ctx.fillText(`D = ${state.steeringAngleDeg.toFixed(0)}°`, startX + 10, startY + 16);
+    }
+
+    function draw() {
+      if (!canvas.width || !canvas.height) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const bounds = boundsForVectors();
+      drawGrid(bounds);
+      drawAxes(bounds);
+      state.vectors.forEach((v, i) => {
+        drawVector(v, bounds, i);
+        drawDirectionVector(v, bounds);
+      });
+      vectorCount.textContent = `${state.vectors.length} vector${state.vectors.length === 1 ? '' : 's'}`;
+      draftLabel.textContent = `V = (0.0, 0.0, 0.0), L=1.0; D = heading of S relative to O`;
+    }
+
+    async function loadVectors() {
+      try {
+        const res = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data.vectors)) {
+          state.vectors = data.vectors;
+          draw();
+        }
+      } catch (err) {
+        console.warn('Vector data reload failed:', err);
+      }
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+    loadVectors();
+    setInterval(loadVectors, 1000);
+
+    window.VectorViewer = {
+      getState: () => structuredClone(state),
+      setVectors: (vectors) => {
+        state.vectors = Array.isArray(vectors) && vectors.length ? vectors : [];
+        draw();
+      },
+      addVector: (vector) => {
+        state.vectors.push(vector);
+        draw();
+      }
+    };
+  </script>
+</body>
+</html>
