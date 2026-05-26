@@ -3,338 +3,1405 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Spline</title>
+  <title>Spline Lab</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b1020;
-      --panel: #11192f;
-      --grid: rgba(148, 163, 184, 0.22);
-      --axis: rgba(226, 232, 240, 0.7);
-      --vector: #7dd3fc;
-      --vector-head: #38bdf8;
-      --text: #e2e8f0;
-      --muted: #94a3b8;
+      --bg: #070b16;
+      --bg-2: #0c1224;
+      --panel: rgba(13, 18, 34, 0.92);
+      --panel-strong: rgba(18, 25, 46, 0.98);
+      --line: rgba(157, 173, 212, 0.18);
+      --line-strong: rgba(157, 173, 212, 0.28);
+      --text: #edf3ff;
+      --muted: #95a2c9;
+      --accent: #7dd3fc;
+      --accent-2: #7ef0bf;
+      --warn: #fbbf24;
+      --danger: #fb7185;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
     }
+    * { box-sizing: border-box; }
     html, body {
       margin: 0;
       width: 100%;
-      height: 100%;
-      background: radial-gradient(circle at top, #111a33, var(--bg) 55%);
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(125, 211, 252, 0.18), transparent 30%),
+        radial-gradient(circle at 88% 12%, rgba(126, 240, 191, 0.12), transparent 24%),
+        linear-gradient(180deg, #060914 0%, var(--bg) 55%, #05070f 100%);
       color: var(--text);
-      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }
-    .shell {
-      height: 100%;
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      gap: 12px;
-      padding: 16px;
-      box-sizing: border-box;
+    button, input {
+      font: inherit;
     }
-    .titlebar {
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .topbar {
       display: flex;
       justify-content: space-between;
-      align-items: end;
-      gap: 16px;
+      gap: 18px;
+      align-items: start;
+      padding: 18px 20px 14px;
     }
-    h1 { margin: 0; font-size: 18px; font-weight: 650; }
-    .meta { color: var(--muted); font-size: 13px; }
-    .frame-wrap {
-      display: grid;
-      place-items: center;
-      min-height: 0;
+    .titleblock h1 {
+      margin: 0;
+      font-size: clamp(24px, 3vw, 40px);
+      line-height: 0.98;
+      letter-spacing: -0.05em;
     }
-    .frame {
-      width: min(88vmin, 860px);
-      aspect-ratio: 1 / 1;
-      background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.94));
-      border: 1px solid rgba(148, 163, 184, 0.2);
-      border-radius: 18px;
-      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-      position: relative;
-      overflow: hidden;
-    }
-    canvas { width: 100%; height: 100%; display: block; }
-    .legend {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
+    .eyebrow {
+      display: inline-flex;
       align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(125, 211, 252, 0.08);
+      color: var(--accent);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+    .sub {
+      margin: 10px 0 0;
+      max-width: 74ch;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+    .status {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
       color: var(--muted);
       font-size: 13px;
-      flex-wrap: wrap;
     }
-    .badge {
-      display: inline-flex;
-      gap: 8px;
-      align-items: center;
+    .pill {
       padding: 8px 10px;
       border-radius: 999px;
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(10px);
     }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--vector); box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.12); }
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 364px;
+      gap: 14px;
+      padding: 0 20px 20px;
+    }
+    .stage-shell, .side {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(12px);
+    }
+    .stage-shell {
+      position: relative;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
+    }
+    .toolbar button {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+    }
+    .toolbar button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(125, 211, 252, 0.38);
+      background: rgba(125, 211, 252, 0.08);
+    }
+    .toolbar button.primary {
+      background: rgba(125, 211, 252, 0.14);
+      border-color: rgba(125, 211, 252, 0.28);
+      color: #dff7ff;
+    }
+    .toolbar button.active {
+      background: rgba(126, 240, 191, 0.14);
+      border-color: rgba(126, 240, 191, 0.34);
+    }
+    .stage-wrap {
+      position: relative;
+      min-height: 0;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+    .hint {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-size: 13px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .side {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+    .side-head {
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .side-head h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -0.04em;
+    }
+    .side-head p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .panel {
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel:last-child {
+      border-bottom: 0;
+    }
+    .panel-title {
+      margin: 0 0 12px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .control {
+      display: grid;
+      gap: 6px;
+    }
+    .control.full {
+      grid-column: 1 / -1;
+    }
+    .control.compact {
+      gap: 4px;
+    }
+    .control.compact label {
+      font-size: 11px;
+    }
+    label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    input[type="number"], input[type="text"], input[type="color"] {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      padding: 10px 11px;
+      outline: none;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .stat {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .stat .k {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .stat .v {
+      margin-top: 8px;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .json {
+      width: 100%;
+      min-height: 130px;
+      resize: vertical;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(4, 8, 16, 0.6);
+      color: #dce7ff;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    @media (max-width: 1080px) {
+      html, body { overflow: auto; }
+      .app { height: auto; min-height: 100vh; }
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+      .stage-shell {
+        min-height: 66vh;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <div class="titlebar">
-      <div>
-        <h1>Spline</h1>
-        <div class="meta">Cartesian frame with updatable vector overlays</div>
+  <div class="app">
+    <header class="topbar">
+      <div class="titleblock">
+        <div class="eyebrow">Interactive 2D vector board</div>
+        <h1>Spline Lab</h1>
+        <p class="sub">
+          A first-pass sketchpad for the vehicle path-motion geometry. Pan and zoom the board,
+          add free vectors, drag handles, and use the vehicle scaffold to reason in normalized
+          coordinates where the wheelbase is fixed at 1 and the motion is controlled by the vehicle geometry inputs.
+        </p>
       </div>
-      <div class="meta" id="vectorCount">1 vector</div>
-    </div>
-
-    <div class="frame-wrap">
-      <div class="frame">
-        <canvas id="canvas"></canvas>
+      <div class="status">
+        <div class="pill" id="mode-pill">Mode: select</div>
+        <div class="pill" id="geometry-pill">Geometry: normalized</div>
+        <div class="pill" id="selected-pill">Selected: none</div>
+        <div class="pill" id="hint-pill">Wheel drag: pan · Shift+wheel: zoom</div>
       </div>
-    </div>
+    </header>
 
-    <div class="legend">
-      <div class="badge"><span class="dot"></span> vector = origin + heading + length</div>
-      <div class="badge">Current draft: <strong id="draftLabel">(0.0, 0.0, 0.0), L=1.0</strong></div>
-    </div>
+    <main class="workspace">
+      <section class="stage-shell">
+        <div class="toolbar">
+          <button class="primary" id="addVectorBtn">Add vector</button>
+          <button id="resetBtn">Reset example</button>
+          <button id="exportBtn">Copy JSON</button>
+          <button id="fitBtn">Fit view</button>
+          <button id="toggleGuidesBtn" class="active">Guides on</button>
+          <button id="toggleVehicleBtn" class="active">Vehicle on</button>
+        </div>
+        <div class="stage-wrap">
+          <canvas id="stage"></canvas>
+        </div>
+        <div class="hint">
+          <div>Drag a vector handle to edit it. Drag empty space to pan. Double-click empty space to create a vector.</div>
+          <div id="coordsReadout">x: 0.00, y: 0.00</div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <div class="side-head">
+          <h2>Inspector</h2>
+          <p>
+            The left side is the drawing surface. This panel edits the vehicle scaffold and any selected free vector.
+            The vehicle overlay is drawn in normalized units with wheelbase fixed at 1.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-title">Vehicle geometry</div>
+          <div class="controls">
+            <div class="control">
+              <label for="radius">Radius</label>
+              <input id="radius" type="number" min="-100" max="100" step="0.1" value="4" />
+              <div class="control compact">
+                <label for="sl">Sl</label>
+                <input id="sl" type="number" min="0" max="100" step="0.01" value="0.0" />
+              </div>
+            </div>
+            <div class="control">
+              <label for="curveLength">Curve length</label>
+              <input id="curveLength" type="number" min="0" max="100" step="0.1" value="6" />
+              <div class="control compact">
+                <label for="sd">Sd</label>
+                <input id="sd" type="number" min="0" max="100" step="0.01" value="0.0" />
+              </div>
+            </div>
+            <div class="control full">
+              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Curve length is the arc length traveled in wheelbase units. Sl is the slew input, Sd is the distance S travels, and θ is derived in the dependent variables pane as Sl × Sd.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Dependent variables</div>
+          <div id="dependentList" class="controls"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Scene stats</div>
+          <div class="stats">
+            <div class="stat">
+              <div class="k">Selection</div>
+              <div class="v" id="selectionValue">None</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Export snapshot</div>
+          <textarea id="jsonOutput" class="json" spellcheck="false" readonly></textarea>
+        </section>
+      </aside>
+    </main>
   </div>
 
   <script>
-    const DATA_URL = './vector-data.json';
-    const state = {
-      vectors: [
-        { x: 0.0, y: 0.0, psi: 0.0, len: 1.0 }
-      ],
-      pad: 0.14,
-      showDirectionVector: true,
-      steeringAngleDeg: 30
-    };
+    const STORAGE_KEY = "vehicle-vector-lab-state-v1";
+    const canvas = document.getElementById("stage");
+    const ctx = canvas.getContext("2d");
+    const addVectorBtn = document.getElementById("addVectorBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const exportBtn = document.getElementById("exportBtn");
+    const fitBtn = document.getElementById("fitBtn");
+    const toggleGuidesBtn = document.getElementById("toggleGuidesBtn");
+    const toggleVehicleBtn = document.getElementById("toggleVehicleBtn");
+    const radiusInput = document.getElementById("radius");
+    const curveLengthInput = document.getElementById("curveLength");
+    const slInput = document.getElementById("sl");
+    const sdInput = document.getElementById("sd");
+    const dependentList = document.getElementById("dependentList");
+    const jsonOutput = document.getElementById("jsonOutput");
+    const modePill = document.getElementById("mode-pill");
+    const geometryPill = document.getElementById("geometry-pill");
+    const selectedPill = document.getElementById("selected-pill");
+    const selectionValue = document.getElementById("selectionValue");
+    const coordsReadout = document.getElementById("coordsReadout");
 
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const vectorCount = document.getElementById('vectorCount');
-    const draftLabel = document.getElementById('draftLabel');
+    const COLORS = ["#7dd3fc", "#7ef0bf", "#fbbf24", "#fb7185", "#c084fc", "#f97316"];
 
-    function resize() {
+    const state = loadState() ?? createDefaultState();
+    let needsRender = true;
+    let animationFrame = 0;
+    let mode = "select";
+    let drag = null;
+    let dependentListDirty = true;
+
+    function createDefaultState() {
+      return {
+        view: { scale: 150, offsetX: 0, offsetY: 0 },
+        ui: { guides: true, vehicle: true },
+        vehicle: { radius: 4, curveLength: 6, sl: 0, sd: 0 },
+        selectedId: null,
+        vectors: [
+          { id: crypto.randomUUID(), label: "Veh", x: 0, y: 0, angle: 0, length: 1.0, color: "#7dd3fc" },
+          { id: crypto.randomUUID(), label: "Sv", x: 1.0, y: 0.0, angle: degToRad(28), length: 0.25, color: "#fbbf24" }
+        ]
+      };
+    }
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+        const parsedVehicle = parsed.vehicle || {};
+        return {
+          ...createDefaultState(),
+          ...parsed,
+          view: { ...createDefaultState().view, ...(parsed.view || {}) },
+          ui: { ...createDefaultState().ui, ...(parsed.ui || {}) },
+          vehicle: {
+            radius: Number.isFinite(Number(parsedVehicle.radius))
+              ? Number(parsedVehicle.radius)
+              : (Number.isFinite(Number(parsedVehicle.wheelbase)) && Number.isFinite(Number(parsedVehicle.steeringDeg))
+                ? Number(parsedVehicle.wheelbase) / Math.tan(degToRad(Number(parsedVehicle.steeringDeg)))
+                : createDefaultState().vehicle.radius),
+            curveLength: Number.isFinite(Number(parsedVehicle.curveLength))
+              ? Number(parsedVehicle.curveLength)
+              : createDefaultState().vehicle.curveLength,
+            sl: Number.isFinite(Number(parsedVehicle.sl))
+              ? Number(parsedVehicle.sl)
+              : createDefaultState().vehicle.sl,
+            sd: Number.isFinite(Number(parsedVehicle.sd))
+              ? Number(parsedVehicle.sd)
+              : createDefaultState().vehicle.sd
+          },
+          vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : createDefaultState().vectors),
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function normalizeVector(vector) {
+      const angle = Number(vector?.angle) || 0;
+      return {
+        ...vector,
+        label: vector?.label === "Heading" ? "Veh" : (vector?.label === "Vehicle vector" ? "Veh" : (vector?.label === "Steer vector" ? "Sv" : vector?.label)),
+        angle: Math.abs(angle) > Math.PI * 2 ? degToRad(angle) : angle
+      };
+    }
+
+    function normalizeVectors(vectors) {
+      const cleaned = [];
+      for (const vector of vectors) {
+        const normalized = normalizeVector(vector);
+        if (normalized.label === "Heading") continue;
+        cleaned.push(normalized);
+      }
+      const hasVeh = cleaned.some(vector => vector.label === "Veh");
+      if (!hasVeh && cleaned.length) {
+        cleaned[0] = { ...cleaned[0], label: "Veh", color: "#7dd3fc" };
+      }
+      for (const vector of cleaned) {
+        if (vector.label === "Steer vector") vector.label = "Sv";
+      }
+      return cleaned;
+    }
+
+    function isVehicleVector(vector) {
+      return vector?.label === "Veh" || vector?.label === "Vehicle vector";
+    }
+
+    function isSteerVector(vector) {
+      return vector?.label === "Sv" || vector?.label === "Steer vector";
+    }
+
+    function isThetaVector(vector) {
+      return isSteerVector(vector);
+    }
+
+    function getThetaValue() {
+      const sl = Number(state.vehicle.sl) || 0;
+      const sd = Number(state.vehicle.sd) || 0;
+      return sl * sd;
+    }
+
+    function getRccValue() {
+      const theta = getThetaValue();
+      return theta !== 0 ? 1 / theta : null;
+    }
+
+    function getRccPoint(vehicleVector = getVehicleVector()) {
+      if (!vehicleVector) return null;
+      const theta = getThetaValue();
+      if (theta === 0) return null;
+      const rear = { x: vehicleVector.x, y: vehicleVector.y };
+      const front = {
+        x: rear.x + Math.cos(vehicleVector.angle) * vehicleVector.length,
+        y: rear.y + Math.sin(vehicleVector.angle) * vehicleVector.length
+      };
+      const rearNormal = { x: -Math.sin(vehicleVector.angle), y: Math.cos(vehicleVector.angle) };
+      const steerNormal = { x: -Math.sin(vehicleVector.angle + theta), y: Math.cos(vehicleVector.angle + theta) };
+      return intersectLines(rear, rearNormal, front, steerNormal);
+    }
+
+    function saveState() {
+      enforceAnchors();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(serializableState()));
+    }
+
+    function getVehicleVector() {
+      return state.vectors.find(isVehicleVector) || state.vectors[0] || null;
+    }
+
+    function getVehicleEnd(vehicleVector = getVehicleVector()) {
+      if (!vehicleVector) return { x: 1, y: 0 };
+      return {
+        x: vehicleVector.x + Math.cos(vehicleVector.angle) * vehicleVector.length,
+        y: vehicleVector.y + Math.sin(vehicleVector.angle) * vehicleVector.length
+      };
+    }
+
+    function enforceAnchors() {
+      const vehicleVector = state.vectors.find(isVehicleVector);
+      const theta = getThetaValue();
+      if (vehicleVector) {
+        vehicleVector.label = "Veh";
+        vehicleVector.x = 0;
+        vehicleVector.y = 0;
+        vehicleVector.length = 1;
+      }
+      const steerVector = state.vectors.find(isSteerVector);
+      if (steerVector) {
+        const end = getVehicleEnd(vehicleVector);
+        steerVector.x = end.x;
+        steerVector.y = end.y;
+        steerVector.length = 0.25;
+        steerVector.angle = (vehicleVector ? vehicleVector.angle : 0) + theta;
+      }
+    }
+
+    function serializableState() {
+      const { rpc: _legacyRpc, theta: _legacyTheta, ...vehicle } = state.vehicle;
+      return {
+        view: state.view,
+        ui: state.ui,
+        vehicle,
+        selectedId: state.selectedId,
+        vectors: state.vectors
+      };
+    }
+
+    function setupCanvas() {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.max(1, Math.round(rect.width * dpr));
       canvas.height = Math.max(1, Math.round(rect.height * dpr));
-      draw();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      scheduleRender();
     }
 
-    function worldToScreen(x, y, bounds, w, h) {
-      const rangeX = bounds.maxX - bounds.minX;
-      const rangeY = bounds.maxY - bounds.minY;
-      const scale = Math.min(w / rangeX, h / rangeY);
-      const padX = (w - rangeX * scale) / 2;
-      const padY = (h - rangeY * scale) / 2;
-      const sx = padX + (x - bounds.minX) * scale;
-      const sy = h - (padY + (y - bounds.minY) * scale);
-      return [sx, sy];
+    function scheduleRender() {
+      needsRender = true;
+      if (animationFrame) return;
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0;
+        if (!needsRender) return;
+        needsRender = false;
+        draw();
+      });
     }
 
-    function drawGrid(bounds) {
-      const w = canvas.width, h = canvas.height;
-      const step = chooseStep(bounds);
+    function worldToScreen(x, y) {
+      const rect = canvas.getBoundingClientRect();
+      const scale = state.view.scale;
+      const cx = rect.width / 2 + state.view.offsetX;
+      const cy = rect.height / 2 + state.view.offsetY;
+      return {
+        x: cx + x * scale,
+        y: cy - y * scale
+      };
+    }
+
+    function screenToWorld(x, y) {
+      const rect = canvas.getBoundingClientRect();
+      const scale = state.view.scale;
+      const cx = rect.width / 2 + state.view.offsetX;
+      const cy = rect.height / 2 + state.view.offsetY;
+      return {
+        x: (x - cx) / scale,
+        y: -(y - cy) / scale
+      };
+    }
+
+    function dist(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function intersectLines(p1, d1, p2, d2) {
+      const det = d1.x * d2.y - d1.y * d2.x;
+      if (Math.abs(det) < 1e-9) return null;
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const t = (dx * d2.y - dy * d2.x) / det;
+      return {
+        x: p1.x + d1.x * t,
+        y: p1.y + d1.y * t
+      };
+    }
+
+    function chooseGridStep(scale) {
+      const targetPixels = 80;
+      const raw = targetPixels / scale;
+      const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10];
+      return steps.find(step => step >= raw) ?? 10;
+    }
+
+    function drawGrid() {
+      if (!state.ui.guides) return;
+      const rect = canvas.getBoundingClientRect();
+      const step = chooseGridStep(state.view.scale);
+      const start = screenToWorld(0, rect.height);
+      const end = screenToWorld(rect.width, 0);
       ctx.lineWidth = 1;
 
-      for (let x = Math.ceil(bounds.minX / step) * step; x <= bounds.maxX; x += step) {
-        const [sx] = worldToScreen(x, 0, bounds, w, h);
-        ctx.strokeStyle = Math.abs(x) < 1e-9 ? 'rgba(226,232,240,0.55)' : getComputedStyle(document.documentElement).getPropertyValue('--grid');
+      const xMin = Math.floor(start.x / step) * step;
+      const xMax = Math.ceil(end.x / step) * step;
+      const yMin = Math.floor(start.y / step) * step;
+      const yMax = Math.ceil(end.y / step) * step;
+      const labelEvery = 5;
+
+      for (let x = xMin, ix = 0; x <= xMax + 1e-9; x += step, ix += 1) {
+        const p = worldToScreen(x, 0);
+        ctx.strokeStyle = Math.abs(x) < 1e-9 ? "rgba(237,243,255,0.34)" : "rgba(157,173,212,0.14)";
         ctx.beginPath();
-        ctx.moveTo(sx, 0);
-        ctx.lineTo(sx, h);
+        ctx.moveTo(p.x, 0);
+        ctx.lineTo(p.x, rect.height);
         ctx.stroke();
+        if (Math.abs(x) < 1e-9 || ix % labelEvery !== 0) continue;
+        ctx.fillStyle = "rgba(149,162,201,0.85)";
+        ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText(formatTick(x), p.x + 4, rect.height / 2 + state.view.offsetY + 4);
       }
-      for (let y = Math.ceil(bounds.minY / step) * step; y <= bounds.maxY; y += step) {
-        const [, sy] = worldToScreen(0, y, bounds, w, h);
-        ctx.strokeStyle = Math.abs(y) < 1e-9 ? 'rgba(226,232,240,0.55)' : getComputedStyle(document.documentElement).getPropertyValue('--grid');
+      for (let y = yMin, iy = 0; y <= yMax + 1e-9; y += step, iy += 1) {
+        const p = worldToScreen(0, y);
+        ctx.strokeStyle = Math.abs(y) < 1e-9 ? "rgba(237,243,255,0.34)" : "rgba(157,173,212,0.14)";
         ctx.beginPath();
-        ctx.moveTo(0, sy);
-        ctx.lineTo(w, sy);
+        ctx.moveTo(0, p.y);
+        ctx.lineTo(rect.width, p.y);
         ctx.stroke();
+        if (Math.abs(y) < 1e-9 || iy % labelEvery !== 0) continue;
+        ctx.fillStyle = "rgba(149,162,201,0.85)";
+        ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText(formatTick(y), rect.width / 2 + state.view.offsetX + 4, p.y + 4);
       }
     }
 
-    function chooseStep(bounds) {
-      return 0.1;
+    function formatTick(value) {
+      const abs = Math.abs(value);
+      if (abs >= 10) return value.toFixed(0);
+      if (abs >= 1) return value.toFixed(1);
+      return value.toFixed(2);
     }
 
-    function boundsForVectors() {
-      let minX = 0, maxX = 0, minY = 0, maxY = 0;
-      for (const v of state.vectors) {
-        const ex = v.x + Math.cos(v.psi) * v.len;
-        const ey = v.y + Math.sin(v.psi) * v.len;
-        minX = Math.min(minX, v.x, ex);
-        maxX = Math.max(maxX, v.x, ex);
-        minY = Math.min(minY, v.y, ey);
-        maxY = Math.max(maxY, v.y, ey);
-      }
-      const rangeX = Math.max(0.001, maxX - minX);
-      const rangeY = Math.max(0.001, maxY - minY);
-      const padX = Math.max(rangeX * state.pad, 0.3);
-      const padY = Math.max(rangeY * state.pad, 0.3);
-      return { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY };
-    }
-
-    function drawAxes(bounds) {
-      const w = canvas.width, h = canvas.height;
-      const [ox] = worldToScreen(0, 0, bounds, w, h);
-      const [, oy] = worldToScreen(0, 0, bounds, w, h);
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--axis');
+    function drawAxes() {
+      const rect = canvas.getBoundingClientRect();
+      const ox = worldToScreen(0, 0).x;
+      const oy = worldToScreen(0, 0).y;
+      ctx.strokeStyle = "rgba(237,243,255,0.55)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(ox, 0);
-      ctx.lineTo(ox, h);
+      ctx.lineTo(ox, rect.height);
       ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(0, oy);
-      ctx.lineTo(w, oy);
+      ctx.lineTo(rect.width, oy);
       ctx.stroke();
+      ctx.fillStyle = "rgba(237,243,255,0.85)";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("y", ox + 8, 12);
+      ctx.fillText("x", rect.width - 14, oy - 18);
     }
 
-    function drawArrow(sx, sy, tx, ty, stroke, fill) {
-      const w = canvas.width, h = canvas.height;
+    function drawArrow(a, b, stroke, fill, width = 3) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const angle = Math.atan2(dy, dx);
+      const head = Math.max(8, 16 / (window.devicePixelRatio || 1));
+
       ctx.strokeStyle = stroke;
       ctx.fillStyle = fill;
-      ctx.lineWidth = Math.max(2, Math.min(w, h) * 0.006);
-      ctx.lineCap = 'round';
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(tx, ty);
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
       ctx.stroke();
-      const angle = Math.atan2(ty - sy, tx - sx);
-      const head = Math.max(10, Math.min(w, h) * 0.02);
-      const a1 = angle + Math.PI * 0.85;
-      const a2 = angle - Math.PI * 0.85;
+
       ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(tx + Math.cos(a1) * head, ty + Math.sin(a1) * head);
-      ctx.lineTo(tx + Math.cos(a2) * head, ty + Math.sin(a2) * head);
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(b.x - Math.cos(angle - Math.PI / 8) * head, b.y - Math.sin(angle - Math.PI / 8) * head);
+      ctx.lineTo(b.x - Math.cos(angle + Math.PI / 8) * head, b.y - Math.sin(angle + Math.PI / 8) * head);
       ctx.closePath();
       ctx.fill();
     }
 
-    function drawVector(v, bounds, idx) {
-      const w = canvas.width, h = canvas.height;
-      const [sx, sy] = worldToScreen(v.x, v.y, bounds, w, h);
-      const ex = v.x + Math.cos(v.psi) * v.len;
-      const ey = v.y + Math.sin(v.psi) * v.len;
-      const [tx, ty] = worldToScreen(ex, ey, bounds, w, h);
-
-      drawArrow(sx, sy, tx, ty, getComputedStyle(document.documentElement).getPropertyValue('--vector'), getComputedStyle(document.documentElement).getPropertyValue('--vector-head'));
-
-      ctx.beginPath();
-      ctx.fillStyle = '#e2e8f0';
-      ctx.arc(sx, sy, Math.max(3, Math.min(w, h) * 0.007), 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#cbd5e1';
-      ctx.font = `${Math.max(12, Math.min(w, h) * 0.022)}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const midX = (sx + tx) / 2;
-      const midY = (sy + ty) / 2;
-      const labelOffset = 12;
-      const perpX = -(ty - sy);
-      const perpY = tx - sx;
-      const perpMag = Math.hypot(perpX, perpY) || 1;
-      const lx = midX + (perpX / perpMag) * labelOffset;
-      const ly = midY + (perpY / perpMag) * labelOffset;
-      ctx.fillText('V', lx, ly);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
+    function vectorEndpoints(vector) {
+      const vehicleVector = getVehicleVector();
+      const start = isVehicleVector(vector)
+        ? { x: 0, y: 0 }
+        : isSteerVector(vector)
+          ? getVehicleEnd(vehicleVector)
+          : { x: vector.x, y: vector.y };
+      const length = isSteerVector(vector) ? 0.25 : isVehicleVector(vector) ? 1 : vector.length;
+      const end = {
+        x: start.x + Math.cos(vector.angle) * length,
+        y: start.y + Math.sin(vector.angle) * length
+      };
+      return { start, end };
     }
 
-    function drawDirectionVector(v, bounds) {
-      if (!state.showDirectionVector) return;
-      const w = canvas.width, h = canvas.height;
-      const [ox, oy] = worldToScreen(v.x, v.y, bounds, w, h);
-      const sx = v.x + Math.cos(v.psi) * v.len;
-      const sy = v.y + Math.sin(v.psi) * v.len;
-      const [startX, startY] = worldToScreen(sx, sy, bounds, w, h);
-      const angleRad = (state.steeringAngleDeg * Math.PI) / 180;
-      const dirLen = 0.1;
-      const dx = sx + Math.cos(v.psi + angleRad) * dirLen;
-      const dy = sy + Math.sin(v.psi + angleRad) * dirLen;
-      const [tx, ty] = worldToScreen(dx, dy, bounds, w, h);
-      drawArrow(startX, startY, tx, ty, '#f59e0b', '#fbbf24');
-      ctx.fillStyle = '#fde68a';
-      ctx.font = `${Math.max(12, Math.min(w, h) * 0.022)}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const midX = (startX + tx) / 2;
-      const midY = (startY + ty) / 2;
-      const labelOffset = 12;
-      const perpX = -(ty - startY);
-      const perpY = tx - startX;
-      const perpMag = Math.hypot(perpX, perpY) || 1;
-      const lx = midX + (perpX / perpMag) * labelOffset;
-      const ly = midY + (perpY / perpMag) * labelOffset;
-      ctx.fillText('D', lx, ly);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
+    function drawVehicle() {
+      if (!state.ui.vehicle) return;
+      const radius = Number(state.vehicle.radius) || 0;
+      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const turnAngle = radius === 0 ? 0 : curveLength / radius;
+      const vehicleVector = normalizeVector(state.vectors.find(isVehicleVector) || state.vectors[0] || { x: 0, y: 0, angle: 0, length: 1, label: "Veh", color: "#7dd3fc" });
+      const bodyAngle = vehicleVector.angle;
+      const steerAngle = bodyAngle + getThetaValue();
+      const rear = { x: vehicleVector.x, y: vehicleVector.y };
+      const front = {
+        x: rear.x + Math.cos(bodyAngle) * vehicleVector.length,
+        y: rear.y + Math.sin(bodyAngle) * vehicleVector.length
+      };
+      const rearS = worldToScreen(rear.x, rear.y);
+      const frontS = worldToScreen(front.x, front.y);
+      const absRadius = Math.abs(radius);
+      const center = { x: 0, y: radius };
+      const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
+      const curvePoints = [];
+      const sampleCount = Math.max(16, Math.ceil(Math.abs(turnAngle) * 24));
+      for (let i = 0; i <= sampleCount; i += 1) {
+        const t = i / sampleCount;
+        const angle = startAngle + turnAngle * t;
+        curvePoints.push({
+          x: center.x + Math.cos(angle) * absRadius,
+          y: center.y + Math.sin(angle) * absRadius
+        });
+      }
+      const rearEnd = {
+        x: radius === 0 ? 0 : radius * Math.sin(turnAngle),
+        y: radius === 0 ? 0 : radius * (1 - Math.cos(turnAngle))
+      };
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      if (absRadius > 0) {
+        const centerS = worldToScreen(center.x, center.y);
+        ctx.strokeStyle = "rgba(126,240,191,0.38)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        curvePoints.forEach((point, index) => {
+          const screen = worldToScreen(point.x, point.y);
+          if (index === 0) ctx.moveTo(screen.x, screen.y);
+          else ctx.lineTo(screen.x, screen.y);
+        });
+        ctx.stroke();
+        ctx.fillStyle = "rgba(126,240,191,0.9)";
+        ctx.beginPath();
+        ctx.arc(centerS.x, centerS.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(126,240,191,0.9)";
+        ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillText("ICC", centerS.x + 8, centerS.y - 8);
+
+        const arcMid = worldToScreen(
+          center.x + Math.cos(startAngle + turnAngle / 2) * absRadius,
+          center.y + Math.sin(startAngle + turnAngle / 2) * absRadius
+        );
+        ctx.strokeStyle = "rgba(126,240,191,0.38)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(centerS.x, centerS.y);
+        ctx.lineTo(arcMid.x, arcMid.y);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(126,240,191,0.92)";
+        ctx.beginPath();
+        ctx.arc(arcMid.x, arcMid.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(237,243,255,0.9)";
+        ctx.fillText(`s = ${curveLength.toFixed(2)}`, arcMid.x + 10, arcMid.y - 8);
+      }
+      const rccValue = getRccValue();
+      if (rccValue !== null) {
+        const rearNormal = { x: -Math.sin(bodyAngle), y: Math.cos(bodyAngle) };
+        const steerNormal = { x: -Math.sin(steerAngle), y: Math.cos(steerAngle) };
+        const rcc = intersectLines(rear, rearNormal, front, steerNormal);
+        if (rcc) {
+          const rccS = worldToScreen(rcc.x, rcc.y);
+          ctx.save();
+          ctx.setLineDash([5, 5]);
+          ctx.strokeStyle = "rgba(251,191,36,0.42)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(rearS.x, rearS.y);
+          ctx.lineTo(rccS.x, rccS.y);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(rccS.x, rccS.y);
+          ctx.lineTo(frontS.x, frontS.y);
+          ctx.stroke();
+          ctx.fillStyle = "rgba(251,191,36,0.95)";
+          ctx.beginPath();
+          ctx.arc(rccS.x, rccS.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "rgba(251,191,36,0.95)";
+          ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+          ctx.fillText("Rcc", rccS.x + 8, rccS.y - 8);
+          ctx.restore();
+        }
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      ctx.strokeStyle = "rgba(125,211,252,0.92)";
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.fillStyle = '#f8fafc';
-      ctx.arc(ox, oy, Math.max(3, Math.min(w, h) * 0.007), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillText('O', ox + 8, oy - 8);
+      ctx.moveTo(rearS.x, rearS.y);
+      ctx.lineTo(frontS.x, frontS.y);
+      ctx.stroke();
+      const midWheelbase = { x: (rearS.x + frontS.x) / 2, y: (rearS.y + frontS.y) / 2 };
+      ctx.fillStyle = "rgba(125,211,252,0.95)";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("1", midWheelbase.x + 8, midWheelbase.y - 8);
+
+      drawNode(rearS.x, rearS.y, "#7dd3fc", "Rp");
+      drawNode(frontS.x, frontS.y, "#fbbf24", "S");
+      const rearEndS = worldToScreen(rearEnd.x, rearEnd.y);
+      drawNode(rearEndS.x, rearEndS.y, "#7ef0bf", "P");
+
+      const label = `θ = ${formatAngle(getThetaValue())}`;
+      ctx.fillStyle = "rgba(237,243,255,0.88)";
+      ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(label, frontS.x + 12, frontS.y - 18);
+    }
+
+    function drawNode(x, y, color, label) {
+      ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.fillStyle = '#e2e8f0';
-      ctx.arc(startX, startY, Math.max(3, Math.min(w, h) * 0.007), 0, Math.PI * 2);
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillText('S', startX + 8, startY - 8);
-      ctx.fillStyle = '#f59e0b';
-      ctx.font = `${Math.max(11, Math.min(w, h) * 0.018)}px sans-serif`;
-      ctx.fillText(`D = ${state.steeringAngleDeg.toFixed(0)}°`, startX + 10, startY + 16);
+      ctx.fillStyle = "rgba(237,243,255,0.9)";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(label, x + 8, y - 8);
+    }
+
+    function drawVectors() {
+      for (const vector of state.vectors) {
+        const sourceVector = isVehicleVector(vector) ? { ...vector, label: "Veh", color: "#7dd3fc" } : vector;
+        const { start, end } = vectorEndpoints(sourceVector);
+        const s = worldToScreen(start.x, start.y);
+        const e = worldToScreen(end.x, end.y);
+        const selected = state.selectedId === vector.id;
+        const thetaVector = isThetaVector(sourceVector);
+        const vehicleVector = getVehicleVector();
+        const thetaAngle = (vehicleVector ? vehicleVector.angle : 0) + getThetaValue();
+
+        const stroke = isVehicleVector(sourceVector) ? "#7dd3fc" : (selected ? "rgba(255,255,255,0.92)" : sourceVector.color);
+        if (thetaVector) {
+          const dir = {
+            x: s.x + Math.cos(thetaAngle) * 0.22 * state.view.scale,
+            y: s.y - Math.sin(thetaAngle) * 0.22 * state.view.scale
+          };
+          drawArrow(s, dir, stroke, sourceVector.color, 3);
+        } else {
+          drawArrow(s, e, stroke, sourceVector.color, selected ? 4 : 3);
+        }
+        drawNode(s.x, s.y, sourceVector.color, sourceVector.label?.trim() ? sourceVector.label.trim()[0].toUpperCase() : "V");
+        drawHandle(s.x, s.y, selected ? "#ffffff" : sourceVector.color);
+        if (!thetaVector) {
+          drawHandle(e.x, e.y, selected ? "#ffffff" : sourceVector.color);
+        }
+
+        ctx.fillStyle = "rgba(237,243,255,0.88)";
+        ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+        const labelPoint = thetaVector ? worldToScreen(start.x + Math.cos(thetaAngle) * 0.22, start.y + Math.sin(thetaAngle) * 0.22) : e;
+        ctx.fillText(sourceVector.label || "Vector", labelPoint.x + 10, labelPoint.y + 10);
+      }
+    }
+
+    function drawHandle(x, y, color) {
+      ctx.fillStyle = "#070b16";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
 
     function draw() {
-      if (!canvas.width || !canvas.height) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const bounds = boundsForVectors();
-      drawGrid(bounds);
-      drawAxes(bounds);
-      state.vectors.forEach((v, i) => {
-        drawVector(v, bounds, i);
-        drawDirectionVector(v, bounds);
-      });
-      vectorCount.textContent = `${state.vectors.length} vector${state.vectors.length === 1 ? '' : 's'}`;
-      draftLabel.textContent = `V = (0.0, 0.0, 0.0), L=1.0; D = heading of S relative to O`;
+      const rect = canvas.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.fillStyle = "rgba(6, 10, 20, 0.38)";
+      ctx.fillRect(0, 0, rect.width, rect.height);
+
+      drawGrid();
+      drawAxes();
+      drawVehicle();
+      drawVectors();
+
+      updateMetrics();
+      updateDependentList();
+      updateJson();
     }
 
-    async function loadVectors() {
-      try {
-        const res = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (Array.isArray(data.vectors)) {
-          state.vectors = data.vectors;
-          draw();
+    function updateMetrics() {
+      const selected = state.vectors.find(v => v.id === state.selectedId) || null;
+      selectedPill.textContent = `Selected: ${selected ? (selected.label || "vector") : "none"}`;
+      selectionValue.textContent = selected ? (selected.label || "Vector") : "None";
+
+      modePill.textContent = `Mode: ${mode}`;
+      geometryPill.textContent = "Geometry: normalized";
+      coordsReadout.textContent = lastPointerWorld
+        ? `x: ${lastPointerWorld.x.toFixed(2)}, y: ${lastPointerWorld.y.toFixed(2)}`
+        : "x: 0.00, y: 0.00";
+    }
+
+    function updateJson() {
+      jsonOutput.value = JSON.stringify(serializableState(), null, 2);
+    }
+
+    function updateDependentList() {
+      if (!dependentListDirty) return;
+      dependentList.innerHTML = "";
+      const thetaValue = getThetaValue();
+      const rccPoint = getRccPoint();
+      const entries = [
+        {
+          label: "θ",
+          value: formatAngle(thetaValue),
+          note: "θ = Sl × Sd. It starts at 0 until motion is implemented."
+        },
+        {
+          label: "Rcc",
+          value: rccPoint ? `x = ${rccPoint.x.toFixed(2)}, y = ${rccPoint.y.toFixed(2)}` : "undefined",
+          note: "Inverse curvature at Rp."
         }
-      } catch (err) {
-        console.warn('Vector data reload failed:', err);
+      ];
+      for (const entry of entries) {
+        const control = document.createElement("div");
+        control.className = "control";
+        control.innerHTML = `
+          <label>${escapeHtml(entry.label)}</label>
+          <input type="text" value="${escapeHtml(entry.value)}" readonly />
+          <div class="sub" style="margin: 0; font-size: 12px;">${escapeHtml(entry.note)}</div>
+        `;
+        dependentList.appendChild(control);
       }
+      dependentListDirty = false;
     }
 
-    window.addEventListener('resize', resize);
-    resize();
-    loadVectors();
-    setInterval(loadVectors, 1000);
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
 
-    window.VectorViewer = {
-      getState: () => structuredClone(state),
-      setVectors: (vectors) => {
-        state.vectors = Array.isArray(vectors) && vectors.length ? vectors : [];
-        draw();
-      },
-      addVector: (vector) => {
-        state.vectors.push(vector);
-        draw();
+    function degToRad(value) {
+      return (value * Math.PI) / 180;
+    }
+
+    function radToDeg(value) {
+      return (value * 180) / Math.PI;
+    }
+
+    function formatAngle(rad) {
+      const value = Number(rad) || 0;
+      return `${value.toFixed(2)} rad (${radToDeg(value).toFixed(1)}°)`;
+    }
+
+    function vectorAtPoint(point, baseAngle, length, label, color) {
+      return {
+        id: crypto.randomUUID(),
+        label,
+        x: point.x,
+        y: point.y,
+        angle: baseAngle,
+        length,
+        color
+      };
+    }
+
+    function findHit(point) {
+      const hitRadius = 10;
+      for (let i = state.vectors.length - 1; i >= 0; i -= 1) {
+        const vector = state.vectors[i];
+        const { start, end } = vectorEndpoints(vector);
+        const s = worldToScreen(start.x, start.y);
+        const e = worldToScreen(end.x, end.y);
+        const px = point.x;
+        const py = point.y;
+        if (dist({ x: px, y: py }, s) <= hitRadius) {
+          return { vector, kind: "origin", start, end };
+        }
+        if (!isSteerVector(vector) && dist({ x: px, y: py }, e) <= hitRadius) {
+          return { vector, kind: "end", start, end };
+        }
+        if (!isSteerVector(vector) && distanceToSegment(point, s, e) <= 8) {
+          return { vector, kind: "body", start, end };
+        }
       }
-    };
+      return null;
+    }
+
+    function distanceToSegment(point, a, b) {
+      const abx = b.x - a.x;
+      const aby = b.y - a.y;
+      const apx = point.x - a.x;
+      const apy = point.y - a.y;
+      const denom = abx * abx + aby * aby;
+      const t = denom === 0 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
+      const cx = a.x + abx * t;
+      const cy = a.y + aby * t;
+      return Math.hypot(point.x - cx, point.y - cy);
+    }
+
+    function canvasPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    }
+
+    let lastPointerWorld = null;
+
+    canvas.addEventListener("pointermove", (event) => {
+      const p = canvasPoint(event);
+      lastPointerWorld = screenToWorld(p.x, p.y);
+
+      if (drag) {
+        if (drag.type === "pan") {
+          state.view.offsetX = drag.startOffsetX + (event.clientX - drag.startClientX);
+          state.view.offsetY = drag.startOffsetY + (event.clientY - drag.startClientY);
+        } else if (drag.type === "vector") {
+          const vector = state.vectors.find(v => v.id === drag.vectorId);
+          if (!vector) return;
+          const world = screenToWorld(p.x, p.y);
+          const vehicleVector = getVehicleVector();
+          const vehicleEnd = getVehicleEnd(vehicleVector);
+          if (drag.kind === "origin") {
+            if (isVehicleVector(vector)) {
+              vector.x = 0;
+              vector.y = 0;
+              vector.length = 1;
+              vector.angle = Math.atan2(world.y, world.x);
+            } else if (isSteerVector(vector)) {
+              vector.x = vehicleEnd.x;
+              vector.y = vehicleEnd.y;
+              vector.length = 0.25;
+              vector.angle = Math.atan2(world.y - vehicleEnd.y, world.x - vehicleEnd.x);
+            } else {
+              vector.x = world.x;
+              vector.y = world.y;
+            }
+          } else if (drag.kind === "end" || drag.kind === "placing") {
+            if (isVehicleVector(vector)) {
+              vector.x = 0;
+              vector.y = 0;
+              vector.length = 1;
+              vector.angle = Math.atan2(world.y, world.x);
+            } else if (isSteerVector(vector)) {
+              vector.x = vehicleEnd.x;
+              vector.y = vehicleEnd.y;
+              vector.length = 0.25;
+              vector.angle = Math.atan2(world.y - vehicleEnd.y, world.x - vehicleEnd.x);
+            } else {
+              const dx = world.x - vector.x;
+              const dy = world.y - vector.y;
+              vector.length = Math.max(0.01, Math.hypot(dx, dy));
+              vector.angle = Math.atan2(dy, dx);
+            }
+          } else if (drag.kind === "body") {
+            if (isVehicleVector(vector)) {
+              vector.x = 0;
+              vector.y = 0;
+              vector.length = 1;
+              vector.angle = Math.atan2(world.y, world.x);
+            } else if (isSteerVector(vector)) {
+              vector.x = vehicleEnd.x;
+              vector.y = vehicleEnd.y;
+              vector.length = 0.25;
+              vector.angle = Math.atan2(world.y - vehicleEnd.y, world.x - vehicleEnd.x);
+            } else {
+              vector.x = world.x - drag.grabOffset.x;
+              vector.y = world.y - drag.grabOffset.y;
+            }
+          }
+          dependentListDirty = true;
+        }
+        saveState();
+        scheduleRender();
+        return;
+      }
+
+      const hit = findHit(p);
+      canvas.style.cursor = hit ? "grab" : "crosshair";
+    });
+
+    canvas.addEventListener("pointerdown", (event) => {
+      canvas.setPointerCapture(event.pointerId);
+      const p = canvasPoint(event);
+      const world = screenToWorld(p.x, p.y);
+
+      if (mode === "add-vector") {
+        const vector = vectorAtPoint(world, 0, 0.01, `Vector ${state.vectors.length + 1}`, COLORS[state.vectors.length % COLORS.length]);
+        state.vectors.push(vector);
+        state.selectedId = vector.id;
+        dependentListDirty = true;
+        drag = { type: "vector", vectorId: vector.id, kind: "end" };
+        mode = "select";
+        addVectorBtn.textContent = "Add vector";
+        addVectorBtn.classList.remove("active");
+        saveState();
+        scheduleRender();
+        return;
+      }
+
+      const hit = findHit(p);
+      if (hit) {
+        dependentListDirty = true;
+        state.selectedId = hit.vector.id;
+        drag = {
+          type: "vector",
+          vectorId: hit.vector.id,
+          kind: hit.kind,
+          grabOffset: hit.kind === "body"
+            ? {
+              x: world.x - hit.vector.x,
+              y: world.y - hit.vector.y
+            }
+            : null
+        };
+        saveState();
+        scheduleRender();
+        return;
+      }
+
+      drag = {
+        type: "pan",
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startOffsetX: state.view.offsetX,
+        startOffsetY: state.view.offsetY
+      };
+      state.selectedId = null;
+      dependentListDirty = true;
+      saveState();
+      scheduleRender();
+    });
+
+    canvas.addEventListener("pointerup", () => {
+      if (!drag) return;
+      if (drag.type === "vector") {
+        const vector = state.vectors.find(v => v.id === drag.vectorId);
+        if (vector && isSteerVector(vector)) {
+          vector.length = 0.25;
+        } else if (vector && vector.length < 0.02) {
+          vector.length = 0.02;
+        }
+      }
+      drag = null;
+      saveState();
+      scheduleRender();
+    });
+
+    canvas.addEventListener("pointercancel", () => {
+      drag = null;
+      scheduleRender();
+    });
+
+    canvas.addEventListener("pointerleave", () => {
+      lastPointerWorld = null;
+    });
+
+    canvas.addEventListener("dblclick", (event) => {
+      const p = canvasPoint(event);
+      const hit = findHit(p);
+      if (hit) return;
+      const world = screenToWorld(p.x, p.y);
+      const vector = vectorAtPoint(world, 0, 1.2, `Vector ${state.vectors.length + 1}`, COLORS[state.vectors.length % COLORS.length]);
+      state.vectors.push(vector);
+      state.selectedId = vector.id;
+      dependentListDirty = true;
+      saveState();
+      scheduleRender();
+    });
+
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const zoomFactor = Math.exp(-event.deltaY * 0.0012);
+      const rect = canvas.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      const before = screenToWorld(cursorX, cursorY);
+      state.view.scale = clamp(state.view.scale * zoomFactor, 40, 500);
+      state.view.offsetX = cursorX - rect.width / 2 - before.x * state.view.scale;
+      state.view.offsetY = cursorY - rect.height / 2 + before.y * state.view.scale;
+      saveState();
+      scheduleRender();
+    }, { passive: false });
+
+    addVectorBtn.addEventListener("click", () => {
+      mode = mode === "add-vector" ? "select" : "add-vector";
+      addVectorBtn.classList.toggle("active", mode === "add-vector");
+      addVectorBtn.textContent = mode === "add-vector" ? "Click canvas to place" : "Add vector";
+      scheduleRender();
+    });
+
+    resetBtn.addEventListener("click", () => {
+      localStorage.removeItem(STORAGE_KEY);
+      Object.assign(state, createDefaultState());
+      mode = "select";
+      addVectorBtn.classList.remove("active");
+      addVectorBtn.textContent = "Add vector";
+      syncButtons();
+      dependentListDirty = true;
+      syncInputs();
+      saveState();
+      fitView();
+      scheduleRender();
+    });
+
+    exportBtn.addEventListener("click", async () => {
+      const text = JSON.stringify(serializableState(), null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        exportBtn.textContent = "Copied";
+        setTimeout(() => {
+          exportBtn.textContent = "Copy JSON";
+        }, 1000);
+      } catch {
+        jsonOutput.focus();
+        jsonOutput.select();
+      }
+    });
+
+    fitBtn.addEventListener("click", () => {
+      fitView();
+      saveState();
+      scheduleRender();
+    });
+
+    toggleGuidesBtn.addEventListener("click", () => {
+      state.ui.guides = !state.ui.guides;
+      toggleGuidesBtn.classList.toggle("active", state.ui.guides);
+      toggleGuidesBtn.textContent = state.ui.guides ? "Guides on" : "Guides off";
+      saveState();
+      scheduleRender();
+    });
+
+    toggleVehicleBtn.addEventListener("click", () => {
+      state.ui.vehicle = !state.ui.vehicle;
+      toggleVehicleBtn.classList.toggle("active", state.ui.vehicle);
+      toggleVehicleBtn.textContent = state.ui.vehicle ? "Vehicle on" : "Vehicle off";
+      saveState();
+      scheduleRender();
+    });
+
+    function syncInputs() {
+      radiusInput.value = state.vehicle.radius;
+      curveLengthInput.value = state.vehicle.curveLength;
+      slInput.value = state.vehicle.sl;
+      sdInput.value = state.vehicle.sd;
+    }
+
+    function syncButtons() {
+      toggleGuidesBtn.classList.toggle("active", state.ui.guides);
+      toggleGuidesBtn.textContent = state.ui.guides ? "Guides on" : "Guides off";
+      toggleVehicleBtn.classList.toggle("active", state.ui.vehicle);
+      toggleVehicleBtn.textContent = state.ui.vehicle ? "Vehicle on" : "Vehicle off";
+    }
+
+    radiusInput.addEventListener("input", () => {
+      const value = Number(radiusInput.value);
+      state.vehicle.radius = clamp(value || 0, -100, 100);
+      if (Math.abs(state.vehicle.radius) < 0.01) {
+        state.vehicle.radius = state.vehicle.radius < 0 ? -0.01 : 0.01;
+      }
+      saveState();
+      scheduleRender();
+    });
+    curveLengthInput.addEventListener("input", () => {
+      state.vehicle.curveLength = clamp(Number(curveLengthInput.value) || 0, 0, 100);
+      saveState();
+      scheduleRender();
+    });
+    slInput.addEventListener("input", () => {
+      state.vehicle.sl = clamp(Number(slInput.value) || 0, 0, 100);
+      dependentListDirty = true;
+      saveState();
+      scheduleRender();
+    });
+    sdInput.addEventListener("input", () => {
+      state.vehicle.sd = clamp(Number(sdInput.value) || 0, 0, 100);
+      dependentListDirty = true;
+      saveState();
+      scheduleRender();
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        mode = "select";
+        addVectorBtn.classList.remove("active");
+        addVectorBtn.textContent = "Add vector";
+        drag = null;
+        scheduleRender();
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && state.selectedId) {
+        state.vectors = state.vectors.filter(v => v.id !== state.selectedId);
+        state.selectedId = null;
+        dependentListDirty = true;
+        saveState();
+        scheduleRender();
+      }
+    });
+
+    window.addEventListener("resize", () => {
+      setupCanvas();
+      scheduleRender();
+    });
+
+    function fitView() {
+      const rect = canvas.getBoundingClientRect();
+      const xs = [0];
+      const ys = [0];
+      for (const vector of state.vectors) {
+        const { start, end } = vectorEndpoints(vector);
+        xs.push(start.x, end.x);
+        ys.push(start.y, end.y);
+      }
+      const radius = Number(state.vehicle.radius) || 0;
+      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      if (radius !== 0) {
+        const turnAngle = curveLength / radius;
+        const center = { x: 0, y: radius };
+        const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
+        const sampleCount = Math.max(16, Math.ceil(Math.abs(turnAngle) * 24));
+        for (let i = 0; i <= sampleCount; i += 1) {
+          const t = i / sampleCount;
+          const a = startAngle + turnAngle * t;
+          xs.push(center.x + Math.cos(a) * Math.abs(radius));
+          ys.push(center.y + Math.sin(a) * Math.abs(radius));
+        }
+        const rearEnd = {
+          x: radius * Math.sin(turnAngle),
+          y: radius * (1 - Math.cos(turnAngle))
+        };
+        xs.push(rearEnd.x, rearEnd.x + Math.cos(turnAngle));
+        ys.push(rearEnd.y, rearEnd.y + Math.sin(turnAngle));
+      }
+      const minX = Math.min(...xs) - 1.2;
+      const maxX = Math.max(...xs) + 1.2;
+      const minY = Math.min(...ys) - 1.2;
+      const maxY = Math.max(...ys) + 1.2;
+      const rangeX = Math.max(0.01, maxX - minX);
+      const rangeY = Math.max(0.01, maxY - minY);
+      const scaleX = rect.width / rangeX;
+      const scaleY = rect.height / rangeY;
+      state.view.scale = clamp(Math.min(scaleX, scaleY) * 0.82, 40, 500);
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      state.view.offsetX = -centerX * state.view.scale;
+      state.view.offsetY = centerY * state.view.scale;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    syncInputs();
+    syncButtons();
+    fitView();
+    setupCanvas();
+    saveState();
+    scheduleRender();
   </script>
 </body>
 </html>
