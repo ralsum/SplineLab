@@ -341,13 +341,9 @@
             <div class="control">
               <label for="curveLength">Curve length</label>
               <input id="curveLength" type="number" min="0" max="100" step="0.1" value="6" />
-              <div class="control compact">
-                <label for="sd">Sd</label>
-                <input id="sd" type="number" min="0" max="100" step="0.01" value="0.0" />
-              </div>
             </div>
             <div class="control full">
-              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Curve length is the arc length traveled in wheelbase units. Sl is the slew input, Sd is the distance S travels, and θ is derived in the dependent variables pane as Sl × Sd.</div>
+              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Curve length is the arc length traveled in wheelbase units. Sl drives the stamped series, while the root θ stays at 0.</div>
             </div>
           </div>
         </section>
@@ -388,7 +384,6 @@
     const radiusInput = document.getElementById("radius");
     const curveLengthInput = document.getElementById("curveLength");
     const slInput = document.getElementById("sl");
-    const sdInput = document.getElementById("sd");
     const dependentList = document.getElementById("dependentList");
     const jsonOutput = document.getElementById("jsonOutput");
     const modePill = document.getElementById("mode-pill");
@@ -410,7 +405,8 @@
       return {
         view: { scale: 150, offsetX: 0, offsetY: 0 },
         ui: { guides: true, vehicle: true },
-        vehicle: { radius: 4, curveLength: 6, sl: 0, sd: 0 },
+        vehicle: { radius: 4, curveLength: 6, sl: 0 },
+        vehicleCopies: [],
         selectedId: null,
         vectors: [
           { id: crypto.randomUUID(), label: "Veh", x: 0, y: 0, angle: 0, length: 1.0, color: "#7dd3fc" },
@@ -442,11 +438,9 @@
               : createDefaultState().vehicle.curveLength,
             sl: Number.isFinite(Number(parsedVehicle.sl))
               ? Number(parsedVehicle.sl)
-              : createDefaultState().vehicle.sl,
-            sd: Number.isFinite(Number(parsedVehicle.sd))
-              ? Number(parsedVehicle.sd)
-              : createDefaultState().vehicle.sd
+              : createDefaultState().vehicle.sl
           },
+          vehicleCopies: normalizeVehicleCopies(Array.isArray(parsed.vehicleCopies) ? parsed.vehicleCopies : []),
           vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : createDefaultState().vectors),
         };
       } catch {
@@ -492,15 +486,232 @@
       return isSteerVector(vector);
     }
 
-    function getThetaValue() {
-      const sl = Number(state.vehicle.sl) || 0;
-      const sd = Number(state.vehicle.sd) || 0;
-      return sl * sd;
+    function normalizeVehicleCopies(copies) {
+      return copies
+        .map(copy => ({
+          id: copy?.id || crypto.randomUUID(),
+          x: Number(copy?.x) || 0,
+          y: Number(copy?.y) || 0,
+          angle: Number(copy?.angle) || 0,
+          theta: Number(copy?.theta) || 0,
+          radius: Number(copy?.radius) || 0,
+          curveLength: Number(copy?.curveLength) || 0,
+          label: copy?.label || "Veh",
+          steerLabel: copy?.steerLabel || "Sv"
+        }))
+        .filter(copy => Number.isFinite(copy.x) && Number.isFinite(copy.y) && Number.isFinite(copy.angle));
     }
 
-    function getRccValue() {
-      const theta = getThetaValue();
-      return theta !== 0 ? 1 / theta : null;
+    const vehiclePoseQuadratureNodes = [
+      -0.9602898564975363,
+      -0.7966664774136267,
+      -0.525532409916329,
+      -0.1834346424956498,
+      0.1834346424956498,
+      0.525532409916329,
+      0.7966664774136267,
+      0.9602898564975363
+    ];
+
+    const vehiclePoseQuadratureWeights = [
+      0.10122853629037626,
+      0.22238103445337448,
+      0.31370664587788727,
+      0.36268378337836196,
+      0.36268378337836196,
+      0.31370664587788727,
+      0.22238103445337448,
+      0.10122853629037626
+    ];
+
+    const vehiclePoseBesselCache = {
+      slew: NaN,
+      limit: -1,
+      values: []
+    };
+
+    function complexAdd(a, b) {
+      return { re: a.re + b.re, im: a.im + b.im };
+    }
+
+    function complexScale(a, scale) {
+      return { re: a.re * scale, im: a.im * scale };
+    }
+
+    function complexMul(a, b) {
+      return {
+        re: a.re * b.re - a.im * b.im,
+        im: a.re * b.im + a.im * b.re
+      };
+    }
+
+    function complexExp(angle) {
+      return { re: Math.cos(angle), im: Math.sin(angle) };
+    }
+
+    function powMinusI(power) {
+      switch ((((power % 4) + 4) % 4)) {
+        case 0: return { re: 1, im: 0 };
+        case 1: return { re: 0, im: -1 };
+        case 2: return { re: -1, im: 0 };
+        default: return { re: 0, im: 1 };
+      }
+    }
+
+    function besselJ(order, x) {
+      const n = Math.abs(Math.trunc(order));
+      if (x === 0) return n === 0 ? 1 : 0;
+      let term = Math.pow(x / 2, n) / factorial(n);
+      let sum = term;
+      const x2 = -(x * x) / 4;
+      for (let m = 1; m < 80; m += 1) {
+        term *= x2 / (m * (m + n));
+        sum += term;
+        if (Math.abs(term) < Math.abs(sum) * 1e-13 + 1e-15) break;
+      }
+      return order < 0 && (n % 2 === 1) ? -sum : sum;
+    }
+
+    function factorial(n) {
+      let result = 1;
+      for (let i = 2; i <= n; i += 1) result *= i;
+      return result;
+    }
+
+    function getBesselTable(slew, limit) {
+      if (vehiclePoseBesselCache.slew === slew && vehiclePoseBesselCache.limit >= limit) {
+        return vehiclePoseBesselCache.values;
+      }
+      const values = [];
+      for (let order = 0; order <= limit; order += 1) {
+        values[order] = besselJ(order, 1 / slew);
+      }
+      vehiclePoseBesselCache.slew = slew;
+      vehiclePoseBesselCache.limit = limit;
+      vehiclePoseBesselCache.values = values;
+      return values;
+    }
+
+    function integrateVehiclePoseFront(vehicleVector, distance) {
+      const slew = Number(state.vehicle.sl) || 0;
+      const invSlew = 1 / slew;
+      const phase = invSlew;
+      const travel = distance;
+      const phaseSpan = slew * travel;
+      const harmonicLimit = Math.max(12, Math.ceil(Math.abs(invSlew) + 24));
+      const besselValues = getBesselTable(slew, harmonicLimit + 1);
+      let integral = { re: 0, im: 0 };
+
+      for (let m = -harmonicLimit; m <= harmonicLimit; m += 1) {
+        const besselOrder = m - 1;
+        const besselValue = besselValues[Math.abs(besselOrder)] || 0;
+        const besselTerm = besselOrder < 0 && (Math.abs(besselOrder) % 2 === 1) ? -besselValue : besselValue;
+        const harmonic = m === 0
+          ? { re: phaseSpan, im: 0 }
+          : {
+              re: Math.sin(m * phaseSpan) / m,
+              im: (1 - Math.cos(m * phaseSpan)) / m
+            };
+        const term = complexMul(
+          complexMul(powMinusI(m - 1), { re: besselTerm, im: 0 }),
+          harmonic
+        );
+        integral = complexAdd(integral, term);
+      }
+
+      integral = complexScale(integral, 1 / slew);
+      const front = complexMul(complexExp(phase), integral);
+      const bodyDelta = (2 * Math.sin(phaseSpan / 2) ** 2) / slew;
+      const bodyVector = complexExp(bodyDelta);
+      const localRear = {
+        re: 1 + front.re - bodyVector.re,
+        im: front.im - bodyVector.im
+      };
+      return {
+        x: localRear.re,
+        y: localRear.im,
+        angle: bodyDelta,
+        theta: slew * travel
+      };
+    }
+
+    function integrateVehiclePoseFallback(vehicleVector, distance) {
+      const slew = Number(state.vehicle.sl) || 0;
+      const travel = distance;
+      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin((slew * travel) / 2) ** 2) / slew;
+      const integralNodes = vehiclePoseQuadratureNodes;
+      const integralWeights = vehiclePoseQuadratureWeights;
+      const halfTravel = travel / 2;
+      let frontX = 1;
+      let frontY = 0;
+
+      for (let i = 0; i < integralNodes.length; i += 1) {
+        const s = halfTravel * (integralNodes[i] + 1);
+        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((slew * s) / 2) ** 2) / slew);
+        frontX += integralWeights[i] * Math.cos(phase) * halfTravel;
+        frontY += integralWeights[i] * Math.sin(phase) * halfTravel;
+      }
+
+      const rearX = frontX - Math.cos(bodyDelta);
+      const rearY = frontY - Math.sin(bodyDelta);
+      return {
+        x: rearX,
+        y: rearY,
+        angle: bodyDelta,
+        theta: slew * travel
+      };
+    }
+
+    function sampleVehiclePose(vehicleVector, distance) {
+      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const slew = Number(state.vehicle.sl) || 0;
+      const baseX = Number(vehicleVector?.x) || 0;
+      const baseY = Number(vehicleVector?.y) || 0;
+      const localPose = Math.abs(slew) < 0.01
+        ? integrateVehiclePoseFallback(vehicleVector, distance)
+        : integrateVehiclePoseFront(vehicleVector, distance);
+      const baseAngle = Number(vehicleVector?.angle) || 0;
+      const cosBase = Math.cos(baseAngle);
+      const sinBase = Math.sin(baseAngle);
+      return {
+        x: baseX + localPose.x * cosBase - localPose.y * sinBase,
+        y: baseY + localPose.x * sinBase + localPose.y * cosBase,
+        angle: baseAngle + localPose.angle,
+        theta: localPose.theta,
+        radius: Number(state.vehicle.radius) || 0,
+        curveLength
+      };
+    }
+
+    function buildVehicleCopies(vehicleVector = getVehicleVector()) {
+      if (!vehicleVector) return [];
+      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const sampleCount = curveLength === 0 ? 1 : Math.max(6, Math.ceil(curveLength * 4));
+      const copies = [];
+      for (let i = 0; i < sampleCount; i += 1) {
+        const t = sampleCount === 1 ? 0 : i / (sampleCount - 1);
+        const pose = sampleVehiclePose(vehicleVector, curveLength * t);
+        copies.push({
+          id: `vehicle-copy-${sampleCount}-${i}`,
+          x: pose.x,
+          y: pose.y,
+          angle: pose.angle,
+          theta: i === 0 ? 0 : pose.theta,
+          radius: pose.radius,
+          curveLength: pose.curveLength,
+          label: "Veh",
+          steerLabel: "Sv"
+        });
+      }
+      return copies;
+    }
+
+    function syncDerivedVehicleCopies() {
+      state.vehicleCopies = buildVehicleCopies();
+    }
+
+    function getThetaValue() {
+      return Number(state.vehicleCopies[0]?.theta) || 0;
     }
 
     function getRccPoint(vehicleVector = getVehicleVector()) {
@@ -536,7 +747,6 @@
 
     function enforceAnchors() {
       const vehicleVector = state.vectors.find(isVehicleVector);
-      const theta = getThetaValue();
       if (vehicleVector) {
         vehicleVector.label = "Veh";
         vehicleVector.x = 0;
@@ -549,16 +759,17 @@
         steerVector.x = end.x;
         steerVector.y = end.y;
         steerVector.length = 0.25;
-        steerVector.angle = (vehicleVector ? vehicleVector.angle : 0) + theta;
       }
     }
 
     function serializableState() {
+      syncDerivedVehicleCopies();
       const { rpc: _legacyRpc, theta: _legacyTheta, ...vehicle } = state.vehicle;
       return {
         view: state.view,
         ui: state.ui,
         vehicle,
+        vehicleCopies: state.vehicleCopies,
         selectedId: state.selectedId,
         vectors: state.vectors
       };
@@ -723,6 +934,50 @@
       ctx.fill();
     }
 
+    function drawVehicleInstance(instance, options = {}) {
+      const alpha = options.alpha ?? 1;
+      const bodyWidth = options.bodyWidth ?? 3;
+      const steerWidth = options.steerWidth ?? 2.5;
+      const bodyLabel = options.label ?? "Veh";
+      const steerLabel = options.steerLabel ?? "Sv";
+      const bodyAngle = Number(instance.angle) || 0;
+      const theta = Number(instance.theta) || 0;
+      const rear = { x: Number(instance.x) || 0, y: Number(instance.y) || 0 };
+      const front = {
+        x: rear.x + Math.cos(bodyAngle),
+        y: rear.y + Math.sin(bodyAngle)
+      };
+      const rearS = worldToScreen(rear.x, rear.y);
+      const frontS = worldToScreen(front.x, front.y);
+      const steerEnd = {
+        x: front.x + Math.cos(bodyAngle + theta) * 0.25,
+        y: front.y + Math.sin(bodyAngle + theta) * 0.25
+      };
+      const steerStartS = worldToScreen(front.x, front.y);
+      const steerEndS = worldToScreen(steerEnd.x, steerEnd.y);
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = `rgba(125,211,252,${Math.min(1, 0.82 * alpha)})`;
+      ctx.lineWidth = bodyWidth;
+      ctx.beginPath();
+      ctx.moveTo(rearS.x, rearS.y);
+      ctx.lineTo(frontS.x, frontS.y);
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(251,191,36,${Math.min(1, 0.82 * alpha)})`;
+      ctx.lineWidth = steerWidth;
+      drawArrow(steerStartS, steerEndS, ctx.strokeStyle, ctx.strokeStyle, steerWidth);
+
+      drawNode(rearS.x, rearS.y, `rgba(125,211,252,${Math.min(1, 0.9 * alpha)})`, bodyLabel);
+      drawNode(frontS.x, frontS.y, `rgba(251,191,36,${Math.min(1, 0.9 * alpha)})`, steerLabel);
+
+      ctx.fillStyle = `rgba(237,243,255,${Math.min(1, 0.7 * alpha)})`;
+      ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(`${bodyLabel} + ${steerLabel}`, rearS.x + 10, rearS.y - 10);
+      ctx.restore();
+    }
+
     function vectorEndpoints(vector) {
       const vehicleVector = getVehicleVector();
       const start = isVehicleVector(vector)
@@ -789,7 +1044,7 @@
         ctx.fill();
         ctx.fillStyle = "rgba(126,240,191,0.9)";
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-        ctx.fillText("ICC", centerS.x + 8, centerS.y - 8);
+        ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
 
         const arcMid = worldToScreen(
           center.x + Math.cos(startAngle + turnAngle / 2) * absRadius,
@@ -808,35 +1063,34 @@
         ctx.fillStyle = "rgba(237,243,255,0.9)";
         ctx.fillText(`s = ${curveLength.toFixed(2)}`, arcMid.x + 10, arcMid.y - 8);
       }
-      const rccValue = getRccValue();
-      if (rccValue !== null) {
-        const rearNormal = { x: -Math.sin(bodyAngle), y: Math.cos(bodyAngle) };
-        const steerNormal = { x: -Math.sin(steerAngle), y: Math.cos(steerAngle) };
-        const rcc = intersectLines(rear, rearNormal, front, steerNormal);
-        if (rcc) {
-          const rccS = worldToScreen(rcc.x, rcc.y);
-          ctx.save();
-          ctx.setLineDash([5, 5]);
-          ctx.strokeStyle = "rgba(251,191,36,0.42)";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(rearS.x, rearS.y);
-          ctx.lineTo(rccS.x, rccS.y);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(rccS.x, rccS.y);
-          ctx.lineTo(frontS.x, frontS.y);
-          ctx.stroke();
-          ctx.fillStyle = "rgba(251,191,36,0.95)";
-          ctx.beginPath();
-          ctx.arc(rccS.x, rccS.y, 4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "rgba(251,191,36,0.95)";
-          ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-          ctx.fillText("Rcc", rccS.x + 8, rccS.y - 8);
-          ctx.restore();
-        }
+      const rcc = getRccPoint(vehicleVector);
+      const tangentLength = 1.6;
+      const rccS = rcc ? worldToScreen(rcc.x, rcc.y) : null;
+      ctx.save();
+      ctx.setLineDash([4, 6]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(125,211,252,0.42)";
+      ctx.beginPath();
+      ctx.moveTo(rearS.x, rearS.y);
+      ctx.lineTo(rccS ? rccS.x : rearS.x + Math.cos(bodyAngle) * tangentLength * state.view.scale, rccS ? rccS.y : rearS.y - Math.sin(bodyAngle) * tangentLength * state.view.scale);
+      ctx.stroke();
+      if (rccS) {
+        ctx.strokeStyle = "rgba(251,191,36,0.32)";
+        ctx.beginPath();
+        ctx.moveTo(frontS.x, frontS.y);
+        ctx.lineTo(rccS.x, rccS.y);
+        ctx.stroke();
       }
+      if (rccS) {
+        ctx.fillStyle = "rgba(251,191,36,0.95)";
+        ctx.beginPath();
+        ctx.arc(rccS.x, rccS.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(251,191,36,0.95)";
+        ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillText("Rcc", rccS.x + 8, rccS.y - 8);
+      }
+      ctx.restore();
       ctx.setLineDash([]);
       ctx.restore();
 
@@ -862,6 +1116,21 @@
       ctx.fillText(label, frontS.x + 12, frontS.y - 18);
     }
 
+    function drawVehicleCopies() {
+      if (!state.vehicleCopies.length) return;
+      for (let i = 0; i < state.vehicleCopies.length; i += 1) {
+        const copy = state.vehicleCopies[i];
+        const alpha = 0.14 + (i / Math.max(1, state.vehicleCopies.length - 1)) * 0.42;
+        drawVehicleInstance(copy, {
+          alpha,
+          bodyWidth: 2.5,
+          steerWidth: 2,
+          label: `V${i + 1}`,
+          steerLabel: "S"
+        });
+      }
+    }
+
     function drawNode(x, y, color, label) {
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -882,14 +1151,16 @@
         const thetaVector = isThetaVector(sourceVector);
         const vehicleVector = getVehicleVector();
         const thetaAngle = (vehicleVector ? vehicleVector.angle : 0) + getThetaValue();
+        const thetaTip = thetaVector
+          ? worldToScreen(
+              start.x + Math.cos(thetaAngle) * 0.22,
+              start.y + Math.sin(thetaAngle) * 0.22
+            )
+          : null;
 
         const stroke = isVehicleVector(sourceVector) ? "#7dd3fc" : (selected ? "rgba(255,255,255,0.92)" : sourceVector.color);
         if (thetaVector) {
-          const dir = {
-            x: s.x + Math.cos(thetaAngle) * 0.22 * state.view.scale,
-            y: s.y - Math.sin(thetaAngle) * 0.22 * state.view.scale
-          };
-          drawArrow(s, dir, stroke, sourceVector.color, 3);
+          drawArrow(s, thetaTip, stroke, sourceVector.color, 3);
         } else {
           drawArrow(s, e, stroke, sourceVector.color, selected ? 4 : 3);
         }
@@ -901,8 +1172,8 @@
 
         ctx.fillStyle = "rgba(237,243,255,0.88)";
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-        const labelPoint = thetaVector ? worldToScreen(start.x + Math.cos(thetaAngle) * 0.22, start.y + Math.sin(thetaAngle) * 0.22) : e;
-        ctx.fillText(sourceVector.label || "Vector", labelPoint.x + 10, labelPoint.y + 10);
+        const labelPoint = thetaVector ? thetaTip : e;
+        ctx.fillText(sourceVector.label || "Vector", labelPoint.x + 8, labelPoint.y - 8);
       }
     }
 
@@ -922,8 +1193,10 @@
       ctx.fillStyle = "rgba(6, 10, 20, 0.38)";
       ctx.fillRect(0, 0, rect.width, rect.height);
 
+      syncDerivedVehicleCopies();
       drawGrid();
       drawAxes();
+      drawVehicleCopies();
       drawVehicle();
       drawVectors();
 
@@ -953,18 +1226,18 @@
       dependentList.innerHTML = "";
       const thetaValue = getThetaValue();
       const rccPoint = getRccPoint();
-      const entries = [
-        {
-          label: "θ",
-          value: formatAngle(thetaValue),
-          note: "θ = Sl × Sd. It starts at 0 until motion is implemented."
-        },
-        {
+      const entries = [{
+        label: "θ",
+        value: formatAngle(thetaValue),
+        note: "Root theta stays at 0; the stamped series carries the slew-driven progression."
+      }];
+      if (rccPoint) {
+        entries.push({
           label: "Rcc",
-          value: rccPoint ? `x = ${rccPoint.x.toFixed(2)}, y = ${rccPoint.y.toFixed(2)}` : "undefined",
-          note: "Inverse curvature at Rp."
-        }
-      ];
+          value: `x = ${rccPoint.x.toFixed(2)}, y = ${rccPoint.y.toFixed(2)}`,
+          note: "Intersection of the rear and steer tangents."
+        });
+      }
       for (const entry of entries) {
         const control = document.createElement("div");
         control.className = "control";
@@ -1289,7 +1562,6 @@
       radiusInput.value = state.vehicle.radius;
       curveLengthInput.value = state.vehicle.curveLength;
       slInput.value = state.vehicle.sl;
-      sdInput.value = state.vehicle.sd;
     }
 
     function syncButtons() {
@@ -1319,12 +1591,6 @@
       saveState();
       scheduleRender();
     });
-    sdInput.addEventListener("input", () => {
-      state.vehicle.sd = clamp(Number(sdInput.value) || 0, 0, 100);
-      dependentListDirty = true;
-      saveState();
-      scheduleRender();
-    });
 
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -1349,13 +1615,23 @@
     });
 
     function fitView() {
+      syncDerivedVehicleCopies();
       const rect = canvas.getBoundingClientRect();
       const xs = [0];
       const ys = [0];
+      for (const copy of state.vehicleCopies) {
+        xs.push(copy.x, copy.x + Math.cos(copy.angle));
+        ys.push(copy.y, copy.y + Math.sin(copy.angle));
+      }
       for (const vector of state.vectors) {
         const { start, end } = vectorEndpoints(vector);
         xs.push(start.x, end.x);
         ys.push(start.y, end.y);
+      }
+      const rccPoint = getRccPoint();
+      if (rccPoint) {
+        xs.push(rccPoint.x);
+        ys.push(rccPoint.y);
       }
       const radius = Number(state.vehicle.radius) || 0;
       const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
@@ -1398,6 +1674,7 @@
 
     syncInputs();
     syncButtons();
+    syncDerivedVehicleCopies();
     fitView();
     setupCanvas();
     saveState();
