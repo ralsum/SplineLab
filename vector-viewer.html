@@ -686,11 +686,16 @@
     function buildVehicleCopies(vehicleVector = getVehicleVector()) {
       if (!vehicleVector) return [];
       const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const slew = Number(state.vehicle.sl) || 0;
+      return buildVehicleCopiesForSlew(vehicleVector, curveLength, slew);
+    }
+
+    function buildVehicleCopiesForSlew(vehicleVector, curveLength, slew) {
       const sampleCount = curveLength === 0 ? 1 : Math.max(6, Math.ceil(curveLength * 4));
       const copies = [];
       for (let i = 0; i < sampleCount; i += 1) {
         const t = sampleCount === 1 ? 0 : i / (sampleCount - 1);
-        const pose = sampleVehiclePose(vehicleVector, curveLength * t);
+        const pose = sampleVehiclePoseForSlew(vehicleVector, curveLength * t, slew, curveLength);
         copies.push({
           id: `vehicle-copy-${sampleCount}-${i}`,
           x: pose.x,
@@ -704,6 +709,399 @@
         });
       }
       return copies;
+    }
+
+    function sampleVehiclePoseForSlew(vehicleVector, distance, slew = Number(state.vehicle.sl) || 0, curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0)) {
+      const baseX = Number(vehicleVector?.x) || 0;
+      const baseY = Number(vehicleVector?.y) || 0;
+      const localPose = Math.abs(slew) < 0.01
+        ? integrateVehiclePoseFallbackForSlew(slew, distance)
+        : integrateVehiclePoseFrontForSlew(slew, distance);
+      const baseAngle = Number(vehicleVector?.angle) || 0;
+      const cosBase = Math.cos(baseAngle);
+      const sinBase = Math.sin(baseAngle);
+      return {
+        x: baseX + localPose.x * cosBase - localPose.y * sinBase,
+        y: baseY + localPose.x * sinBase + localPose.y * cosBase,
+        angle: baseAngle + localPose.angle,
+        theta: localPose.theta,
+        radius: Number(state.vehicle.radius) || 0,
+        curveLength
+      };
+    }
+
+    function integrateVehiclePoseFrontForSlew(slew, distance) {
+      const invSlew = 1 / slew;
+      const phase = invSlew;
+      const travel = distance;
+      const phaseSpan = slew * travel;
+      const harmonicLimit = Math.max(12, Math.ceil(Math.abs(invSlew) + 24));
+      const besselValues = getBesselTable(slew, harmonicLimit + 1);
+      let integral = { re: 0, im: 0 };
+
+      for (let m = -harmonicLimit; m <= harmonicLimit; m += 1) {
+        const besselOrder = m - 1;
+        const besselValue = besselValues[Math.abs(besselOrder)] || 0;
+        const besselTerm = besselOrder < 0 && (Math.abs(besselOrder) % 2 === 1) ? -besselValue : besselValue;
+        const harmonic = m === 0
+          ? { re: phaseSpan, im: 0 }
+          : {
+              re: Math.sin(m * phaseSpan) / m,
+              im: (1 - Math.cos(m * phaseSpan)) / m
+            };
+        const term = complexMul(
+          complexMul(powMinusI(m - 1), { re: besselTerm, im: 0 }),
+          harmonic
+        );
+        integral = complexAdd(integral, term);
+      }
+
+      integral = complexScale(integral, 1 / slew);
+      const front = complexMul(complexExp(phase), integral);
+      const bodyDelta = (2 * Math.sin(phaseSpan / 2) ** 2) / slew;
+      const bodyVector = complexExp(bodyDelta);
+      const localRear = {
+        re: 1 + front.re - bodyVector.re,
+        im: front.im - bodyVector.im
+      };
+      return {
+        x: localRear.re,
+        y: localRear.im,
+        angle: bodyDelta,
+        theta: slew * travel
+      };
+    }
+
+    function integrateVehiclePoseFallbackForSlew(slew, distance) {
+      const travel = distance;
+      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin((slew * travel) / 2) ** 2) / slew;
+      const integralNodes = vehiclePoseQuadratureNodes;
+      const integralWeights = vehiclePoseQuadratureWeights;
+      const halfTravel = travel / 2;
+      let frontX = 1;
+      let frontY = 0;
+
+      for (let i = 0; i < integralNodes.length; i += 1) {
+        const s = halfTravel * (integralNodes[i] + 1);
+        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((slew * s) / 2) ** 2) / slew);
+        frontX += integralWeights[i] * Math.cos(phase) * halfTravel;
+        frontY += integralWeights[i] * Math.sin(phase) * halfTravel;
+      }
+
+      const rearX = frontX - Math.cos(bodyDelta);
+      const rearY = frontY - Math.sin(bodyDelta);
+      return {
+        x: rearX,
+        y: rearY,
+        angle: bodyDelta,
+        theta: slew * travel
+      };
+    }
+
+    function evaluateVehicleStampedPathForSl(candidateSl, vehicleVector = getVehicleVector()) {
+      if (!vehicleVector) return [];
+      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      return buildVehicleCopiesForSlew(vehicleVector, curveLength, Number(candidateSl) || 0);
+    }
+
+    function getCurrentTurnBisectorGeometry(vehicleVector = getVehicleVector()) {
+      const radius = Number(state.vehicle.radius) || 0;
+      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      if (!vehicleVector || radius === 0) {
+        return {
+          valid: false,
+          radius,
+          curveLength,
+          turnAngle: 0,
+          center: null,
+          bisectorAngle: 0,
+          bisectorOrigin: null,
+          bisectorDir: null
+        };
+      }
+      const turnAngle = curveLength / radius;
+      const center = { x: 0, y: radius };
+      const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
+      const bisectorAngle = startAngle + turnAngle / 2;
+      const bisectorDir = {
+        x: Math.cos(bisectorAngle),
+        y: Math.sin(bisectorAngle)
+      };
+      return {
+        valid: true,
+        radius,
+        curveLength,
+        turnAngle,
+        center,
+        startAngle,
+        bisectorAngle,
+        bisectorOrigin: center,
+        bisectorDir
+      };
+    }
+
+    function normalizePointDirection(vector) {
+      const length = Math.hypot(Number(vector?.x) || 0, Number(vector?.y) || 0);
+      if (!length) return null;
+      return {
+        x: (Number(vector?.x) || 0) / length,
+        y: (Number(vector?.y) || 0) / length
+      };
+    }
+
+    function dot2(a, b) {
+      return (Number(a?.x) || 0) * (Number(b?.x) || 0) + (Number(a?.y) || 0) * (Number(b?.y) || 0);
+    }
+
+    function cross2(a, b) {
+      return (Number(a?.x) || 0) * (Number(b?.y) || 0) - (Number(a?.y) || 0) * (Number(b?.x) || 0);
+    }
+
+    function findPolylineBisectorIntersection(polyline, bisectorOrigin, bisectorDir) {
+      if (!Array.isArray(polyline) || polyline.length < 2 || !bisectorOrigin || !bisectorDir) return null;
+      const lineDir = normalizePointDirection(bisectorDir);
+      if (!lineDir) return null;
+      let best = null;
+      let pathDistance = 0;
+
+      for (let i = 0; i < polyline.length - 1; i += 1) {
+        const a = polyline[i];
+        const b = polyline[i + 1];
+        const segment = { x: b.x - a.x, y: b.y - a.y };
+        const denom = cross2(segment, lineDir);
+        if (Math.abs(denom) < 1e-12) {
+          pathDistance += Math.hypot(segment.x, segment.y);
+          continue;
+        }
+        const diff = { x: bisectorOrigin.x - a.x, y: bisectorOrigin.y - a.y };
+        const u = cross2(diff, lineDir) / denom;
+        const v = cross2(diff, segment) / denom;
+        if (u < -1e-9 || u > 1 + 1e-9 || v < -1e-9) {
+          pathDistance += Math.hypot(segment.x, segment.y);
+          continue;
+        }
+        const clampedU = clamp(u, 0, 1);
+        const intersection = {
+          x: a.x + segment.x * clampedU,
+          y: a.y + segment.y * clampedU
+        };
+        const tangent = normalizePointDirection(segment);
+        const candidate = {
+          point: intersection,
+          tangent,
+          segmentIndex: i,
+          segmentT: clampedU,
+          pathDistance: pathDistance + Math.hypot(segment.x, segment.y) * clampedU,
+          lineT: v
+        };
+        if (!best || candidate.pathDistance < best.pathDistance) {
+          best = candidate;
+        }
+        pathDistance += Math.hypot(segment.x, segment.y);
+      }
+
+      return best;
+    }
+
+    function evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector = getVehicleVector()) {
+      const geometry = getCurrentTurnBisectorGeometry(vehicleVector);
+      if (!geometry.valid) {
+        return {
+          sl: candidateSl,
+          error: NaN,
+          geometry,
+          pathCopies: [],
+          intersection: null
+        };
+      }
+      const pathCopies = evaluateVehicleStampedPathForSl(candidateSl, vehicleVector);
+      const polyline = pathCopies.map(copy => ({ x: Number(copy.x) || 0, y: Number(copy.y) || 0 }));
+      const intersection = findPolylineBisectorIntersection(polyline, geometry.bisectorOrigin, geometry.bisectorDir);
+      if (!intersection || !intersection.tangent) {
+        return {
+          sl: candidateSl,
+          error: NaN,
+          geometry,
+          pathCopies,
+          intersection: null
+        };
+      }
+      const error = dot2(intersection.tangent, geometry.bisectorDir);
+      return {
+        sl: candidateSl,
+        error,
+        geometry,
+        pathCopies,
+        intersection
+      };
+    }
+
+    function buildBracketedSamples(fn, center, span, sampleCount) {
+      const samples = [];
+      const count = Math.max(2, sampleCount);
+      for (let i = 0; i < count; i += 1) {
+        const t = count === 1 ? 0 : i / (count - 1);
+        const x = center - span + (2 * span) * t;
+        const y = fn(x);
+        samples.push({ x, y });
+      }
+      return samples;
+    }
+
+    function findSignChangeBracket(fn, center, initialSpan = 0.5, maxSpan = 128) {
+      let span = Math.max(1e-3, Math.abs(initialSpan) || 0.5);
+      for (let attempt = 0; attempt < 12 && span <= maxSpan; attempt += 1) {
+        const samples = buildBracketedSamples(fn, center, span, 11);
+        for (let i = 0; i < samples.length - 1; i += 1) {
+          const left = samples[i];
+          const right = samples[i + 1];
+          if (!Number.isFinite(left.y) || !Number.isFinite(right.y)) continue;
+          if (left.y === 0) {
+            return { a: left.x, b: left.x, fa: left.y, fb: left.y, samples };
+          }
+          if (right.y === 0) {
+            return { a: right.x, b: right.x, fa: right.y, fb: right.y, samples };
+          }
+          if (left.y * right.y < 0) {
+            return { a: left.x, b: right.x, fa: left.y, fb: right.y, samples };
+          }
+        }
+        span *= 2;
+      }
+      return null;
+    }
+
+    function solveBracketedRoot(fn, a, b, fa = fn(a), fb = fn(b), options = {}) {
+      const tolerance = options.tolerance ?? 1e-7;
+      const maxIterations = options.maxIterations ?? 64;
+      let left = a;
+      let right = b;
+      let fLeft = fa;
+      let fRight = fb;
+      if (!Number.isFinite(fLeft) || !Number.isFinite(fRight) || fLeft * fRight > 0) {
+        return {
+          success: false,
+          reason: "invalid-bracket",
+          root: NaN,
+          iterations: 0,
+          bracket: { left, right, fLeft, fRight }
+        };
+      }
+      if (Math.abs(fLeft) <= tolerance) {
+        return {
+          success: true,
+          reason: "endpoint-root",
+          root: left,
+          iterations: 0,
+          bracket: { left, right, fLeft, fRight }
+        };
+      }
+      if (Math.abs(fRight) <= tolerance) {
+        return {
+          success: true,
+          reason: "endpoint-root",
+          root: right,
+          iterations: 0,
+          bracket: { left, right, fLeft, fRight }
+        };
+      }
+
+      let candidate = left;
+      let fCandidate = fLeft;
+
+      for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+        candidate = Number.isFinite(fLeft) && Number.isFinite(fRight) && fRight !== fLeft
+          ? right - (fRight * (right - left)) / (fRight - fLeft)
+          : (left + right) / 2;
+        if (!Number.isFinite(candidate) || candidate <= Math.min(left, right) || candidate >= Math.max(left, right)) {
+          candidate = (left + right) / 2;
+        }
+        fCandidate = fn(candidate);
+        if (!Number.isFinite(fCandidate)) {
+          candidate = (left + right) / 2;
+          fCandidate = fn(candidate);
+        }
+        if (!Number.isFinite(fCandidate)) {
+          return {
+            success: false,
+            reason: "non-finite-evaluation",
+            root: NaN,
+            iterations: iteration,
+            bracket: { left, right, fLeft, fRight }
+          };
+        }
+        if (Math.abs(fCandidate) <= tolerance || Math.abs(right - left) <= tolerance) {
+          return {
+            success: true,
+            reason: "converged",
+            root: candidate,
+            iterations: iteration,
+            bracket: { left, right, fLeft, fRight },
+            value: fCandidate
+          };
+        }
+        if (fLeft * fCandidate <= 0) {
+          right = candidate;
+          fRight = fCandidate;
+        } else {
+          left = candidate;
+          fLeft = fCandidate;
+        }
+      }
+
+      return {
+        success: false,
+        reason: "max-iterations",
+        root: candidate,
+        iterations: maxIterations,
+        bracket: { left, right, fLeft, fRight },
+        value: fCandidate
+      };
+    }
+
+    function solveVehicleSlForBisectorAlignment(vehicleVector = getVehicleVector(), options = {}) {
+      const startSl = Number.isFinite(Number(options.initialSl))
+        ? Number(options.initialSl)
+        : (Number(state.vehicle.sl) || 0);
+      const initialSpan = Number.isFinite(Number(options.initialSpan)) ? Math.abs(Number(options.initialSpan)) : Math.max(0.5, Math.abs(startSl) * 0.25, 0.25);
+      const maxSpan = Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128;
+      const fn = (sl) => evaluateVehicleBisectorAlignmentError(sl, vehicleVector).error;
+      const bracket = findSignChangeBracket(fn, startSl, initialSpan, maxSpan);
+      if (!bracket) {
+        const fallback = evaluateVehicleBisectorAlignmentError(startSl, vehicleVector);
+        return {
+          success: false,
+          sl: NaN,
+          error: fallback.error,
+          reason: "no-bracket-found",
+          initialSl: startSl,
+          initialSpan,
+          maxSpan,
+          geometry: fallback.geometry,
+          evaluation: fallback,
+          bracket: null,
+          iterations: 0
+        };
+      }
+      const solved = solveBracketedRoot(fn, bracket.a, bracket.b, bracket.fa, bracket.fb, options);
+      const evaluation = Number.isFinite(solved.root)
+        ? evaluateVehicleBisectorAlignmentError(solved.root, vehicleVector)
+        : evaluateVehicleBisectorAlignmentError(startSl, vehicleVector);
+      return {
+        success: solved.success,
+        sl: solved.root,
+        error: evaluation.error,
+        reason: solved.reason,
+        initialSl: startSl,
+        initialSpan,
+        maxSpan,
+        geometry: evaluation.geometry,
+        intersection: evaluation.intersection,
+        evaluation,
+        bracket: { left: bracket.a, right: bracket.b, fLeft: bracket.fa, fRight: bracket.fb },
+        iterations: solved.iterations,
+        value: solved.value ?? evaluation.error
+      };
     }
 
     function syncDerivedVehicleCopies() {
@@ -1029,15 +1427,20 @@
       ctx.setLineDash([6, 6]);
       if (absRadius > 0) {
         const centerS = worldToScreen(center.x, center.y);
-        ctx.strokeStyle = "rgba(126,240,191,0.38)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        curvePoints.forEach((point, index) => {
-          const screen = worldToScreen(point.x, point.y);
-          if (index === 0) ctx.moveTo(screen.x, screen.y);
-          else ctx.lineTo(screen.x, screen.y);
-        });
-        ctx.stroke();
+        const midIndex = Math.max(1, Math.floor(curvePoints.length / 2));
+        const strokeCurve = (startIndex, endIndex, strokeStyle, lineWidth) => {
+          ctx.strokeStyle = strokeStyle;
+          ctx.lineWidth = lineWidth;
+          ctx.beginPath();
+          for (let i = startIndex; i <= endIndex; i += 1) {
+            const screen = worldToScreen(curvePoints[i].x, curvePoints[i].y);
+            if (i === startIndex) ctx.moveTo(screen.x, screen.y);
+            else ctx.lineTo(screen.x, screen.y);
+          }
+          ctx.stroke();
+        };
+        strokeCurve(0, midIndex, "rgba(126,240,191,0.52)", 2.2);
+        strokeCurve(midIndex, curvePoints.length - 1, "rgba(126,240,191,0.14)", 1.8);
         ctx.fillStyle = "rgba(126,240,191,0.9)";
         ctx.beginPath();
         ctx.arc(centerS.x, centerS.y, 4, 0, Math.PI * 2);
@@ -1046,15 +1449,20 @@
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
 
+        const bisectorAngle = startAngle + turnAngle / 2;
         const arcMid = worldToScreen(
-          center.x + Math.cos(startAngle + turnAngle / 2) * absRadius,
-          center.y + Math.sin(startAngle + turnAngle / 2) * absRadius
+          center.x + Math.cos(bisectorAngle) * absRadius,
+          center.y + Math.sin(bisectorAngle) * absRadius
+        );
+        const guideEnd = worldToScreen(
+          center.x + Math.cos(bisectorAngle) * absRadius * 1.85,
+          center.y + Math.sin(bisectorAngle) * absRadius * 1.85
         );
         ctx.strokeStyle = "rgba(126,240,191,0.38)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(centerS.x, centerS.y);
-        ctx.lineTo(arcMid.x, arcMid.y);
+        ctx.lineTo(guideEnd.x, guideEnd.y);
         ctx.stroke();
         ctx.fillStyle = "rgba(126,240,191,0.92)";
         ctx.beginPath();
@@ -1652,6 +2060,9 @@
         };
         xs.push(rearEnd.x, rearEnd.x + Math.cos(turnAngle));
         ys.push(rearEnd.y, rearEnd.y + Math.sin(turnAngle));
+        const bisectorAngle = startAngle + turnAngle / 2;
+        xs.push(center.x + Math.cos(bisectorAngle) * Math.abs(radius) * 1.85);
+        ys.push(center.y + Math.sin(bisectorAngle) * Math.abs(radius) * 1.85);
       }
       const minX = Math.min(...xs) - 1.2;
       const maxX = Math.max(...xs) + 1.2;
