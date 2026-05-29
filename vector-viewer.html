@@ -339,11 +339,11 @@
               <input id="radius" type="number" min="-100" max="100" step="0.1" value="4" />
             </div>
             <div class="control">
-              <label for="curveLength">Curve length</label>
-              <input id="curveLength" type="number" min="0" max="100" step="0.1" value="6" />
+              <label for="headingChange">Heading Change</label>
+              <input id="headingChange" type="number" min="0" max="100" step="0.08726646259971647" value="1.5707963267948966" />
             </div>
             <div class="control full">
-              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Curve length is the arc length traveled in wheelbase units. Sl is solved from the geometry and shown in the dependent variables pane.</div>
+              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Heading change is the arc angle traveled in radians. Curve length is derived internally as radius times heading change. Sl is solved from the geometry and shown in the dependent variables pane.</div>
             </div>
           </div>
         </section>
@@ -382,7 +382,7 @@
     const toggleGuidesBtn = document.getElementById("toggleGuidesBtn");
     const toggleVehicleBtn = document.getElementById("toggleVehicleBtn");
     const radiusInput = document.getElementById("radius");
-    const curveLengthInput = document.getElementById("curveLength");
+    const headingChangeInput = document.getElementById("headingChange");
     const dependentList = document.getElementById("dependentList");
     const jsonOutput = document.getElementById("jsonOutput");
     const modePill = document.getElementById("mode-pill");
@@ -415,7 +415,7 @@
         ui: { guides: true, vehicle: true },
         vehicle: {
           radius: 4,
-          curveLength: 6,
+          headingChange: Math.PI / 2,
           sl: 0.01,
           finalPose: null
         },
@@ -445,9 +445,7 @@
               : (Number.isFinite(Number(parsedVehicle.wheelbase)) && Number.isFinite(Number(parsedVehicle.steeringDeg))
                 ? Number(parsedVehicle.wheelbase) / Math.tan(degToRad(Number(parsedVehicle.steeringDeg)))
                 : createDefaultState().vehicle.radius),
-            curveLength: Number.isFinite(Number(parsedVehicle.curveLength))
-              ? Number(parsedVehicle.curveLength)
-              : createDefaultState().vehicle.curveLength,
+            headingChange: createDefaultState().vehicle.headingChange,
             sl: Number.isFinite(Number(parsedVehicle.sl))
               ? Number(parsedVehicle.sl)
               : createDefaultState().vehicle.sl,
@@ -673,11 +671,11 @@
     }
 
     function sampleVehiclePose(vehicleVector, distance) {
-      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const curveLength = Math.max(0, getCurveLengthFromGeometry(state.vehicle));
       const slew = Number(state.vehicle.sl) || 0;
       const baseX = Number(vehicleVector?.x) || 0;
       const baseY = Number(vehicleVector?.y) || 0;
-      const localPose = Math.abs(slew) < 0.01
+      const localPose = Math.abs(slew) < 0.001
         ? integrateVehiclePoseFallback(vehicleVector, distance)
         : integrateVehiclePoseFront(vehicleVector, distance);
       const baseAngle = Number(vehicleVector?.angle) || 0;
@@ -693,14 +691,14 @@
       };
     }
 
-    function buildVehicleCopies(vehicleVector = getVehicleVector()) {
+    function buildVehicleCopies(vehicleVector = getVehicleVector(), terminalPose = state.vehicle.finalPose, curveLengthOverride = getCurveLengthFromGeometry(state.vehicle)) {
       if (!vehicleVector) return [];
-      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const curveLength = Math.max(0, Number(curveLengthOverride) || 0);
       const slew = Number(state.vehicle.sl) || 0;
-      return buildVehicleCopiesForSlew(vehicleVector, curveLength, slew, Number(state.vehicle.radius) || 0);
+      return buildVehicleCopiesForSlew(vehicleVector, curveLength, slew, Number(state.vehicle.radius) || 0, terminalPose);
     }
 
-    function buildVehicleCopiesForSlew(vehicleVector, curveLength, slew, radius = 0) {
+    function buildVehicleCopiesForSlew(vehicleVector, curveLength, slew, radius = 0, terminalPose = null) {
       const sampleCount = curveLength === 0 ? 1 : Math.max(6, Math.ceil(curveLength * 4));
       const copies = [];
       for (let i = 0; i < sampleCount; i += 1) {
@@ -719,13 +717,26 @@
           pathDistance: curveLength * t
         });
       }
+      if (copies.length && terminalPose && Number.isFinite(Number(terminalPose.x)) && Number.isFinite(Number(terminalPose.y))) {
+        const lastIndex = copies.length - 1;
+        copies[lastIndex] = {
+          ...copies[lastIndex],
+          x: Number(terminalPose.x) || 0,
+          y: Number(terminalPose.y) || 0,
+          angle: Number(terminalPose.angle) || 0,
+          theta: Number(terminalPose.theta) || 0,
+          radius: Number(terminalPose.radius) || radius,
+          curveLength: Number(terminalPose.curveLength) || curveLength,
+          pathDistance: curveLength
+        };
+      }
       return copies;
     }
 
     function sampleVehiclePoseForSlew(vehicleVector, distance, slew = 0, curveLength = 0, radius = 0) {
       const baseX = Number(vehicleVector?.x) || 0;
       const baseY = Number(vehicleVector?.y) || 0;
-      const localPose = Math.abs(slew) < 0.01
+      const localPose = Math.abs(slew) < 0.001
         ? integrateVehiclePoseFallbackForSlew(slew, distance)
         : integrateVehiclePoseFrontForSlew(slew, distance);
       const baseAngle = Number(vehicleVector?.angle) || 0;
@@ -811,13 +822,13 @@
 
     function evaluateVehicleStampedPathForSl(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
       if (!vehicleVector) return [];
-      const curveLength = Math.max(0, Number(geometry?.curveLength) || 0);
+      const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
       return buildVehicleCopiesForSlew(vehicleVector, curveLength, Number(candidateSl) || 0, Number(geometry?.radius) || 0);
     }
 
     function getCurrentTurnBisectorGeometry(vehicleVector = getVehicleVector(), geometry = state.vehicle) {
       const radius = Number(geometry?.radius) || 0;
-      const curveLength = Math.max(0, Number(geometry?.curveLength) || 0);
+      const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
       if (!vehicleVector || radius === 0) {
         return {
           valid: false,
@@ -914,6 +925,90 @@
       return best;
     }
 
+    function resolveFinalVehiclePose(vehicleVector, geometry, terminalPose) {
+      if (!terminalPose) return null;
+      return {
+        x: Number(terminalPose.x) || 0,
+        y: Number(terminalPose.y) || 0,
+        angle: Number(terminalPose.angle) || 0,
+        theta: Number(terminalPose.theta) || 0,
+        radius: Number(geometry?.radius) || 0,
+        curveLength: getCurveLengthFromGeometry(geometry)
+      };
+    }
+
+    function solveVehicleHeadingChangeForBisectorAlignment(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
+      const bisectorGeometry = getCurrentTurnBisectorGeometry(vehicleVector, geometry);
+      if (!bisectorGeometry.valid) {
+        return {
+          success: false,
+          headingChange: NaN,
+          curveLength: NaN,
+          error: NaN,
+          reason: "invalid-geometry",
+          geometry: bisectorGeometry,
+          evaluation: null,
+          bracket: null,
+          iterations: 0
+        };
+      }
+      const startHeadingChange = Math.max(0, getHeadingChange(geometry));
+      const maxSpan = Number.isFinite(Number(geometry?.maxHeadingChange)) ? Math.abs(Number(geometry.maxHeadingChange)) : 100;
+      const initialSpan = Math.max(0.5, startHeadingChange * 0.5 + 0.5);
+      const fn = (headingChange) => evaluateVehicleBisectorAlignmentError(
+        candidateSl,
+        vehicleVector,
+        { ...geometry, headingChange }
+      ).rearDistance;
+
+      const bracket = findPositiveSignChangeBracket(fn, startHeadingChange, initialSpan, maxSpan);
+      if (bracket) {
+        const solved = solveBracketedRoot(fn, bracket.a, bracket.b, bracket.fa, bracket.fb, {
+          tolerance: 1e-7,
+          maxIterations: 64
+        });
+        const headingChange = Math.max(0, Number.isFinite(Number(solved.root)) ? Number(solved.root) : startHeadingChange);
+        const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
+        return {
+          success: solved.success && Number.isFinite(evaluation.rearDistance) && Math.abs(evaluation.rearDistance) <= 1e-7,
+          headingChange,
+          curveLength: getCurveLengthFromGeometry({ ...geometry, headingChange }),
+          error: evaluation.rearDistance,
+          reason: solved.success ? "converged" : solved.reason,
+          geometry: evaluation.geometry,
+          evaluation,
+          bracket: solved.bracket,
+          iterations: solved.iterations,
+          value: evaluation.rearDistance
+        };
+      }
+
+      const fallback = searchPositiveMinimum(
+        (headingChange) => {
+          const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
+          return Number.isFinite(evaluation.rearDistance) ? evaluation.rearDistance ** 2 : Infinity;
+        },
+        startHeadingChange,
+        maxSpan,
+        5,
+        21
+      );
+      const headingChange = Math.max(0, fallback.x);
+      const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
+      return {
+        success: Number.isFinite(evaluation.rearDistance) && Math.abs(evaluation.rearDistance) <= 1e-7,
+        headingChange,
+        curveLength: getCurveLengthFromGeometry({ ...geometry, headingChange }),
+        error: evaluation.rearDistance,
+        reason: "minimum-search",
+        geometry: evaluation.geometry,
+        evaluation,
+        bracket: null,
+        iterations: fallback.evaluations,
+        value: evaluation.rearDistance
+      };
+    }
+
     function evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
       const bisectorGeometry = getCurrentTurnBisectorGeometry(vehicleVector, geometry);
       if (!bisectorGeometry.valid) {
@@ -927,7 +1022,7 @@
           bodyAlignment: NaN
         };
       }
-      const curveLength = Math.max(0, Number(geometry?.curveLength) || 0);
+      const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
       const radius = Number(geometry?.radius) || 0;
       const endPose = sampleVehiclePoseForSlew(vehicleVector, curveLength, Number(candidateSl) || 0, curveLength, radius);
       const rearDistance = cross2(
@@ -953,23 +1048,23 @@
     }
 
     function evaluateVehicleCombinedAlignment(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
-      const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, geometry);
+      const inner = solveVehicleHeadingChangeForBisectorAlignment(candidateSl, vehicleVector, geometry);
+      const evaluation = inner.evaluation || evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange: inner.headingChange });
       if (!evaluation.geometry?.valid || !Number.isFinite(evaluation.endPose?.x) || !Number.isFinite(evaluation.endPose?.y)) {
         return {
           ...evaluation,
+          inner,
           bodyAngleError: NaN,
           score: NaN
         };
       }
-      const positionScale = Math.max(
-        1,
-        Math.abs(Number(evaluation.geometry.radius) || 0),
-        Math.max(0, Number(evaluation.geometry.curveLength) || 0)
-      );
       const bodyAngleError = Math.asin(clamp(Number(evaluation.bodyAlignment) || 0, -1, 1));
-      const score = ((Number(evaluation.rearDistance) || 0) / positionScale) ** 2 + bodyAngleError ** 2;
+      const score = bodyAngleError ** 2;
       return {
         ...evaluation,
+        inner,
+        headingChange: inner.headingChange,
+        curveLength: inner.curveLength,
         bodyAngleError,
         score
       };
@@ -1196,19 +1291,21 @@
           initialSl: Number.isFinite(Number(options.initialSl)) ? Number(options.initialSl) : 0.01,
           initialSpan: Number.isFinite(Number(options.initialSpan)) ? Math.abs(Number(options.initialSpan)) : 0.5,
           maxSpan: Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128,
-          geometry: options.geometry || { radius: 4, curveLength: 6 },
+          geometry: options.geometry || { radius: 4, headingChange: Math.PI / 2 },
           evaluation: null,
           bracket: null,
           iterations: 0
         };
       }
-      const geometry = options.geometry || { radius: 4, curveLength: 6 };
+      const geometry = options.geometry || { radius: 4, headingChange: Math.PI / 2 };
       const startSl = Math.max(0, Number.isFinite(Number(options.initialSl))
         ? Number(options.initialSl)
         : 0.01);
       const maxSpan = Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128;
       const fn = (sl) => evaluateVehicleCombinedAlignment(sl, vehicleVector, geometry).score;
-      const solved = searchPositiveMinimum(fn, startSl, maxSpan, Number.isFinite(Number(options.passes)) ? Math.max(1, Number(options.passes)) : 5, Number.isFinite(Number(options.sampleCount)) ? Math.max(5, Number(options.sampleCount)) : 21);
+      const outerPasses = Number.isFinite(Number(options.passes)) ? Math.max(1, Number(options.passes)) : 5;
+      const outerSamples = Number.isFinite(Number(options.sampleCount)) ? Math.max(5, Number(options.sampleCount)) : 21;
+      const solved = searchPositiveMinimum(fn, startSl, maxSpan, outerPasses, outerSamples);
       const evaluation = evaluateVehicleCombinedAlignment(solved.x, vehicleVector, geometry);
       const tolerance = Number.isFinite(Number(options.tolerance)) ? Math.abs(Number(options.tolerance)) : 1e-7;
       const bodyTolerance = Number.isFinite(Number(options.bodyTolerance)) ? Math.abs(Number(options.bodyTolerance)) : 1e-6;
@@ -1217,6 +1314,8 @@
       return {
         success: Boolean(rearAligned && bodyAligned),
         sl: Math.max(0, solved.x),
+        headingChange: Math.max(0, Number(evaluation.headingChange) || 0),
+        curveLength: Math.max(0, Number(evaluation.curveLength) || 0),
         error: evaluation.score,
         reason: rearAligned && bodyAligned ? "converged" : "alignment-mismatch",
         initialSl: startSl,
@@ -1224,6 +1323,7 @@
         geometry: evaluation.geometry,
         intersection: evaluation.intersection,
         evaluation,
+        inner: evaluation.inner || null,
         iterations: solved.evaluations,
         value: evaluation.score,
         rearDistance: evaluation.rearDistance,
@@ -1521,7 +1621,7 @@
     function drawVehicle() {
       if (!state.ui.vehicle) return;
       const radius = Number(state.vehicle.radius) || 0;
-      const curveLength = Math.max(0, Number(state.vehicle.curveLength) || 0);
+      const curveLength = Math.max(0, getCurveLengthFromGeometry(state.vehicle));
       const turnGeometry = getCurrentTurnBisectorGeometry(getVehicleVector(), state.vehicle);
       const vehicleVector = normalizeVector(state.vectors.find(isVehicleVector) || state.vectors[0] || { x: 0, y: 0, angle: 0, length: 1, label: "Veh", color: "#7dd3fc" });
       const pose = state.vehicle.finalPose || sampleVehiclePoseForSlew(
@@ -1787,11 +1887,11 @@
       const entries = [{
         label: "Sl",
         value: Number.isFinite(Number(state.vehicle.sl)) ? Number(state.vehicle.sl).toFixed(3) : "NaN",
-        note: "Solved steering slew for the current radius and curve length."
+        note: "Solved steering slew for the current radius and heading change."
       }, {
         label: "Rp",
         value: state.vehicle.finalPose
-          ? `${Number(state.vehicle.finalPose.x || 0).toFixed(3)}, ${Number(state.vehicle.finalPose.y || 0).toFixed(3)}, ${formatAngle(Number(state.vehicle.finalPose.angle) || 0)}`
+          ? `x: ${formatFixed10(state.vehicle.finalPose.x)}, y: ${formatFixed10(state.vehicle.finalPose.y)}, psi: ${formatFixed10(state.vehicle.finalPose.angle)}, Cl: ${formatFixed10(state.vehicle.finalPose.curveLength)}`
           : "NaN",
         note: "Final rear pose returned by the algorithm."
       }];
@@ -1820,15 +1920,23 @@
       return (value * Math.PI) / 180;
     }
 
-    function getCurveLengthStep(radius = state.vehicle.radius) {
-      const absRadius = Math.abs(Number(radius) || 0);
-      return Math.max(1e-4, absRadius * degToRad(5));
+    function getHeadingChangeStep() {
+      return degToRad(5);
     }
 
-    function snapCurveLength(value, radius = state.vehicle.radius) {
-      const step = getCurveLengthStep(radius);
+    function snapHeadingChange(value) {
+      const step = getHeadingChangeStep();
       const numeric = Math.max(0, Number(value) || 0);
       return Math.round(numeric / step) * step;
+    }
+
+    function getHeadingChange(geometry = state.vehicle) {
+      return Math.max(0, Number(geometry?.headingChange) || 0);
+    }
+
+    function getCurveLengthFromGeometry(geometry = state.vehicle) {
+      const radius = Number(geometry?.radius) || 0;
+      return radius * getHeadingChange(geometry);
     }
 
     function radToDeg(value) {
@@ -1838,6 +1946,10 @@
     function formatAngle(rad) {
       const value = Number(rad) || 0;
       return `${value.toFixed(2)} rad (${radToDeg(value).toFixed(1)}°)`;
+    }
+
+    function formatFixed10(value) {
+      return (Number(value) || 0).toFixed(10);
     }
 
     function vectorAtPoint(point, baseAngle, length, label, color) {
@@ -2133,8 +2245,8 @@
 
     function syncInputs() {
       radiusInput.value = state.vehicle.radius;
-      curveLengthInput.value = state.vehicle.curveLength;
-      curveLengthInput.step = String(getCurveLengthStep(state.vehicle.radius));
+      headingChangeInput.value = state.vehicle.headingChange;
+      headingChangeInput.step = String(getHeadingChangeStep());
     }
 
     function recalculateVehicleSolution(options = {}) {
@@ -2153,8 +2265,17 @@
       if (Number.isFinite(result.sl)) {
         state.vehicle.sl = result.sl;
       }
-      state.vehicleCopies = buildVehicleCopies(vehicleVector);
-      state.vehicle.finalPose = result?.evaluation?.endPose || null;
+      if (Number.isFinite(result.headingChange)) {
+        state.vehicle.headingChange = result.headingChange;
+      }
+      const sweepCopies = buildVehicleCopies(vehicleVector, null, result?.curveLength);
+      state.vehicle.finalPose = resolveFinalVehiclePose(
+        vehicleVector,
+        state.vehicle,
+        result?.evaluation?.endPose || null,
+        sweepCopies
+      );
+      state.vehicleCopies = buildVehicleCopies(vehicleVector, state.vehicle.finalPose, result?.curveLength);
       dependentListDirty = true;
       syncInputs();
       if (persist) saveState();
@@ -2170,24 +2291,16 @@
     }
 
     radiusInput.addEventListener("input", () => {
-      const previousRadius = Number(state.vehicle.radius) || 0;
-      const previousCurveLength = Number(state.vehicle.curveLength) || 0;
-      const previousTurnAngle = previousRadius === 0 ? 0 : previousCurveLength / previousRadius;
       const value = Number(radiusInput.value);
       state.vehicle.radius = clamp(value || 0, -100, 100);
       if (Math.abs(state.vehicle.radius) < 0.01) {
         state.vehicle.radius = state.vehicle.radius < 0 ? -0.01 : 0.01;
       }
-      state.vehicle.curveLength = clamp(
-        snapCurveLength(previousTurnAngle * state.vehicle.radius, state.vehicle.radius),
-        0,
-        100
-      );
       syncInputs();
       recalculateVehicleSolution();
     });
-    curveLengthInput.addEventListener("input", () => {
-      state.vehicle.curveLength = clamp(snapCurveLength(Number(curveLengthInput.value) || 0, state.vehicle.radius), 0, 100);
+    headingChangeInput.addEventListener("input", () => {
+      state.vehicle.headingChange = clamp(snapHeadingChange(Number(headingChangeInput.value) || 0), 0, 100);
       syncInputs();
       recalculateVehicleSolution();
     });
