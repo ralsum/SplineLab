@@ -1582,19 +1582,25 @@
         );
         ctx.stroke();
 
-        const midIndex = Math.max(0, Math.floor(arcPoints.length / 2));
-        const arcMidS = worldToScreen(arcPoints[midIndex].x, arcPoints[midIndex].y);
+        const arcBisectorS = worldToScreen(
+          center.x + Math.cos(turnGeometry.bisectorAngle) * absRadius,
+          center.y + Math.sin(turnGeometry.bisectorAngle) * absRadius
+        );
+        const arcEndS = worldToScreen(arcPoints[arcPoints.length - 1].x, arcPoints[arcPoints.length - 1].y);
         ctx.fillStyle = "rgba(126,240,191,0.92)";
         ctx.beginPath();
         ctx.arc(centerS.x, centerS.y, 4, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(arcMidS.x, arcMidS.y, 3.5, 0, Math.PI * 2);
+        ctx.arc(arcBisectorS.x, arcBisectorS.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(arcEndS.x, arcEndS.y, 3.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = "rgba(237,243,255,0.88)";
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
-        ctx.fillText(`s = ${curveLength.toFixed(2)}`, arcMidS.x + 10, arcMidS.y - 8);
+        ctx.fillText(`Al = ${curveLength.toFixed(2)}`, arcEndS.x + 10, arcEndS.y - 8);
         ctx.restore();
       }
 
@@ -1812,6 +1818,17 @@
 
     function degToRad(value) {
       return (value * Math.PI) / 180;
+    }
+
+    function getCurveLengthStep(radius = state.vehicle.radius) {
+      const absRadius = Math.abs(Number(radius) || 0);
+      return Math.max(1e-4, absRadius * degToRad(5));
+    }
+
+    function snapCurveLength(value, radius = state.vehicle.radius) {
+      const step = getCurveLengthStep(radius);
+      const numeric = Math.max(0, Number(value) || 0);
+      return Math.round(numeric / step) * step;
     }
 
     function radToDeg(value) {
@@ -2117,6 +2134,7 @@
     function syncInputs() {
       radiusInput.value = state.vehicle.radius;
       curveLengthInput.value = state.vehicle.curveLength;
+      curveLengthInput.step = String(getCurveLengthStep(state.vehicle.radius));
     }
 
     function recalculateVehicleSolution(options = {}) {
@@ -2152,15 +2170,25 @@
     }
 
     radiusInput.addEventListener("input", () => {
+      const previousRadius = Number(state.vehicle.radius) || 0;
+      const previousCurveLength = Number(state.vehicle.curveLength) || 0;
+      const previousTurnAngle = previousRadius === 0 ? 0 : previousCurveLength / previousRadius;
       const value = Number(radiusInput.value);
       state.vehicle.radius = clamp(value || 0, -100, 100);
       if (Math.abs(state.vehicle.radius) < 0.01) {
         state.vehicle.radius = state.vehicle.radius < 0 ? -0.01 : 0.01;
       }
+      state.vehicle.curveLength = clamp(
+        snapCurveLength(previousTurnAngle * state.vehicle.radius, state.vehicle.radius),
+        0,
+        100
+      );
+      syncInputs();
       recalculateVehicleSolution();
     });
     curveLengthInput.addEventListener("input", () => {
-      state.vehicle.curveLength = clamp(Number(curveLengthInput.value) || 0, 0, 100);
+      state.vehicle.curveLength = clamp(snapCurveLength(Number(curveLengthInput.value) || 0, state.vehicle.radius), 0, 100);
+      syncInputs();
       recalculateVehicleSolution();
     });
 
