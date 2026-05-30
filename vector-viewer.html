@@ -289,9 +289,8 @@
         <div class="eyebrow">Interactive 2D vector board</div>
         <h1>Spline Lab</h1>
         <p class="sub">
-          A first-pass sketchpad for the vehicle path-motion geometry. Pan and zoom the board,
-          add free vectors, drag handles, and use the vehicle scaffold to reason in normalized
-          coordinates where the wheelbase is fixed at 1 and the motion is controlled by the vehicle geometry inputs.
+          A first-pass sketchpad for normalized vector motion. Pan and zoom the board,
+          add free vectors, and drag handles to reason about position, direction, and length.
         </p>
       </div>
       <div class="status">
@@ -310,7 +309,6 @@
           <button id="exportBtn">Copy JSON</button>
           <button id="fitBtn">Fit view</button>
           <button id="toggleGuidesBtn" class="active">Guides on</button>
-          <button id="toggleVehicleBtn" class="active">Vehicle on</button>
         </div>
         <div class="stage-wrap">
           <canvas id="stage"></canvas>
@@ -326,30 +324,12 @@
         <div class="side-head">
           <h2>Inspector</h2>
           <p>
-            The left side is the drawing surface. This panel edits the vehicle scaffold and any selected free vector.
-            The vehicle overlay is drawn in normalized units with wheelbase fixed at 1.
+            The left side is the drawing surface. This panel shows the currently selected vector and its basic measurements.
           </p>
         </div>
 
         <section class="panel">
-          <div class="panel-title">Vehicle geometry</div>
-          <div class="controls">
-            <div class="control">
-              <label for="radius">Radius</label>
-              <input id="radius" type="number" min="-100" max="100" step="0.1" value="4" />
-            </div>
-            <div class="control">
-              <label for="headingChange">Heading Change</label>
-              <input id="headingChange" type="number" min="0" max="100" step="0.08726646259971647" value="1.5707963267948966" />
-            </div>
-            <div class="control full">
-              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Heading change is the arc angle traveled in radians. Curve length is derived internally as radius times heading change. Sl is solved from the geometry and shown in the dependent variables pane.</div>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Dependent variables</div>
+          <div class="panel-title">Selection details</div>
           <div id="dependentList" class="controls"></div>
         </section>
 
@@ -372,7 +352,7 @@
   </div>
 
   <script>
-    const STORAGE_KEY = "vehicle-vector-lab-state-v1";
+    const STORAGE_KEY = "vector-lab-state-v1";
     const canvas = document.getElementById("stage");
     const ctx = canvas.getContext("2d");
     const addVectorBtn = document.getElementById("addVectorBtn");
@@ -380,9 +360,6 @@
     const exportBtn = document.getElementById("exportBtn");
     const fitBtn = document.getElementById("fitBtn");
     const toggleGuidesBtn = document.getElementById("toggleGuidesBtn");
-    const toggleVehicleBtn = document.getElementById("toggleVehicleBtn");
-    const radiusInput = document.getElementById("radius");
-    const headingChangeInput = document.getElementById("headingChange");
     const dependentList = document.getElementById("dependentList");
     const jsonOutput = document.getElementById("jsonOutput");
     const modePill = document.getElementById("mode-pill");
@@ -407,23 +384,12 @@
     let drag = null;
     let dependentListDirty = true;
     let initialized = false;
-    let initialVehicleSequenceFitPending = true;
-
     function createDefaultState() {
       return {
         view: { scale: 150, offsetX: 0, offsetY: 0 },
-        ui: { guides: true, vehicle: true },
-        vehicle: {
-          radius: 4,
-          headingChange: Math.PI / 2,
-          sl: 0.01,
-          finalPose: null
-        },
-        vehicleCopies: [],
+        ui: { guides: true },
         selectedId: null,
-        vectors: [
-          { id: randomId(), label: "Veh", x: 0, y: 0, angle: 0, length: 1.0, color: "#7dd3fc" }
-        ]
+        vectors: []
       };
     }
 
@@ -433,26 +399,11 @@
         if (!raw) return null;
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object") return null;
-        const parsedVehicle = parsed.vehicle || {};
         return {
-          ...createDefaultState(),
-          ...parsed,
           view: { ...createDefaultState().view, ...(parsed.view || {}) },
-          ui: { ...createDefaultState().ui, ...(parsed.ui || {}) },
-          vehicle: {
-            radius: Number.isFinite(Number(parsedVehicle.radius))
-              ? Number(parsedVehicle.radius)
-              : (Number.isFinite(Number(parsedVehicle.wheelbase)) && Number.isFinite(Number(parsedVehicle.steeringDeg))
-                ? Number(parsedVehicle.wheelbase) / Math.tan(degToRad(Number(parsedVehicle.steeringDeg)))
-                : createDefaultState().vehicle.radius),
-            headingChange: createDefaultState().vehicle.headingChange,
-            sl: Number.isFinite(Number(parsedVehicle.sl))
-              ? Number(parsedVehicle.sl)
-              : createDefaultState().vehicle.sl,
-            finalPose: null
-          },
-          vehicleCopies: [],
-          vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : createDefaultState().vectors),
+          ui: { guides: parsed?.ui?.guides ?? createDefaultState().ui.guides },
+          selectedId: parsed.selectedId ?? null,
+          vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : []),
         };
       } catch {
         return null;
@@ -463,7 +414,6 @@
       const angle = Number(vector?.angle) || 0;
       return {
         ...vector,
-        label: vector?.label === "Heading" ? "Veh" : (vector?.label === "Vehicle vector" ? "Veh" : vector?.label),
         angle: Math.abs(angle) > Math.PI * 2 ? degToRad(angle) : angle
       };
     }
@@ -472,918 +422,26 @@
       const cleaned = [];
       for (const vector of vectors) {
         const normalized = normalizeVector(vector);
-        if (normalized.label === "Heading" || normalized.label === "Sv" || normalized.label === "Steer vector") continue;
+        if (
+          vectors.length === 1 &&
+          Number(normalized.x) === 0 &&
+          Number(normalized.y) === 0 &&
+          Number(normalized.length) === 1 &&
+          String(normalized.color || "").toLowerCase() === "#7dd3fc"
+        ) continue;
         cleaned.push(normalized);
-      }
-      const hasVeh = cleaned.some(vector => vector.label === "Veh");
-      if (!hasVeh && cleaned.length) {
-        cleaned[0] = { ...cleaned[0], label: "Veh", color: "#7dd3fc" };
       }
       return cleaned;
     }
 
-    function isVehicleVector(vector) {
-      return vector?.label === "Veh" || vector?.label === "Vehicle vector";
-    }
-
-    function isSteerVector(vector) {
-      return vector?.label === "Sv" || vector?.label === "Steer vector";
-    }
-
-    function isThetaVector(vector) {
-      return isSteerVector(vector);
-    }
-
-    function normalizeVehicleCopies(copies) {
-      return copies
-        .map(copy => ({
-          id: copy?.id || randomId(),
-          x: Number(copy?.x) || 0,
-          y: Number(copy?.y) || 0,
-          angle: Number(copy?.angle) || 0,
-          theta: Number(copy?.theta) || 0,
-          radius: Number(copy?.radius) || 0,
-          curveLength: Number(copy?.curveLength) || 0,
-          label: copy?.label || "Veh",
-          steerLabel: copy?.steerLabel || "Sv"
-        }))
-        .filter(copy => Number.isFinite(copy.x) && Number.isFinite(copy.y) && Number.isFinite(copy.angle));
-    }
-
-    const vehiclePoseQuadratureNodes = [
-      -0.9602898564975363,
-      -0.7966664774136267,
-      -0.525532409916329,
-      -0.1834346424956498,
-      0.1834346424956498,
-      0.525532409916329,
-      0.7966664774136267,
-      0.9602898564975363
-    ];
-
-    const vehiclePoseQuadratureWeights = [
-      0.10122853629037626,
-      0.22238103445337448,
-      0.31370664587788727,
-      0.36268378337836196,
-      0.36268378337836196,
-      0.31370664587788727,
-      0.22238103445337448,
-      0.10122853629037626
-    ];
-
-    const vehiclePoseBesselCache = {
-      slew: NaN,
-      limit: -1,
-      values: []
-    };
-
-    function complexAdd(a, b) {
-      return { re: a.re + b.re, im: a.im + b.im };
-    }
-
-    function complexScale(a, scale) {
-      return { re: a.re * scale, im: a.im * scale };
-    }
-
-    function complexMul(a, b) {
-      return {
-        re: a.re * b.re - a.im * b.im,
-        im: a.re * b.im + a.im * b.re
-      };
-    }
-
-    function complexExp(angle) {
-      return { re: Math.cos(angle), im: Math.sin(angle) };
-    }
-
-    function powMinusI(power) {
-      switch ((((power % 4) + 4) % 4)) {
-        case 0: return { re: 1, im: 0 };
-        case 1: return { re: 0, im: -1 };
-        case 2: return { re: -1, im: 0 };
-        default: return { re: 0, im: 1 };
-      }
-    }
-
-    function besselJ(order, x) {
-      const n = Math.abs(Math.trunc(order));
-      if (x === 0) return n === 0 ? 1 : 0;
-      let term = Math.pow(x / 2, n) / factorial(n);
-      let sum = term;
-      const x2 = -(x * x) / 4;
-      for (let m = 1; m < 80; m += 1) {
-        term *= x2 / (m * (m + n));
-        sum += term;
-        if (Math.abs(term) < Math.abs(sum) * 1e-13 + 1e-15) break;
-      }
-      return order < 0 && (n % 2 === 1) ? -sum : sum;
-    }
-
-    function factorial(n) {
-      let result = 1;
-      for (let i = 2; i <= n; i += 1) result *= i;
-      return result;
-    }
-
-    function getBesselTable(slew, limit) {
-      if (vehiclePoseBesselCache.slew === slew && vehiclePoseBesselCache.limit >= limit) {
-        return vehiclePoseBesselCache.values;
-      }
-      const values = [];
-      for (let order = 0; order <= limit; order += 1) {
-        values[order] = besselJ(order, 1 / slew);
-      }
-      vehiclePoseBesselCache.slew = slew;
-      vehiclePoseBesselCache.limit = limit;
-      vehiclePoseBesselCache.values = values;
-      return values;
-    }
-
-    function integrateVehiclePoseFront(vehicleVector, distance) {
-      const slew = Number(state.vehicle.sl) || 0;
-      const invSlew = 1 / slew;
-      const phase = invSlew;
-      const travel = distance;
-      const phaseSpan = slew * travel;
-      const harmonicLimit = Math.max(12, Math.ceil(Math.abs(invSlew) + 24));
-      const besselValues = getBesselTable(slew, harmonicLimit + 1);
-      let integral = { re: 0, im: 0 };
-
-      for (let m = -harmonicLimit; m <= harmonicLimit; m += 1) {
-        const besselOrder = m - 1;
-        const besselValue = besselValues[Math.abs(besselOrder)] || 0;
-        const besselTerm = besselOrder < 0 && (Math.abs(besselOrder) % 2 === 1) ? -besselValue : besselValue;
-        const harmonic = m === 0
-          ? { re: phaseSpan, im: 0 }
-          : {
-              re: Math.sin(m * phaseSpan) / m,
-              im: (1 - Math.cos(m * phaseSpan)) / m
-            };
-        const term = complexMul(
-          complexMul(powMinusI(m - 1), { re: besselTerm, im: 0 }),
-          harmonic
-        );
-        integral = complexAdd(integral, term);
-      }
-
-      integral = complexScale(integral, 1 / slew);
-      const front = complexMul(complexExp(phase), integral);
-      const bodyDelta = (2 * Math.sin(phaseSpan / 2) ** 2) / slew;
-      const bodyVector = complexExp(bodyDelta);
-      const localRear = {
-        re: 1 + front.re - bodyVector.re,
-        im: front.im - bodyVector.im
-      };
-      return {
-        x: localRear.re,
-        y: localRear.im,
-        angle: bodyDelta,
-        theta: slew * travel
-      };
-    }
-
-    function integrateVehiclePoseFallback(vehicleVector, distance) {
-      const slew = Number(state.vehicle.sl) || 0;
-      const travel = distance;
-      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin((slew * travel) / 2) ** 2) / slew;
-      const integralNodes = vehiclePoseQuadratureNodes;
-      const integralWeights = vehiclePoseQuadratureWeights;
-      const halfTravel = travel / 2;
-      let frontX = 1;
-      let frontY = 0;
-
-      for (let i = 0; i < integralNodes.length; i += 1) {
-        const s = halfTravel * (integralNodes[i] + 1);
-        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((slew * s) / 2) ** 2) / slew);
-        frontX += integralWeights[i] * Math.cos(phase) * halfTravel;
-        frontY += integralWeights[i] * Math.sin(phase) * halfTravel;
-      }
-
-      const rearX = frontX - Math.cos(bodyDelta);
-      const rearY = frontY - Math.sin(bodyDelta);
-      return {
-        x: rearX,
-        y: rearY,
-        angle: bodyDelta,
-        theta: slew * travel
-      };
-    }
-
-    function sampleVehiclePose(vehicleVector, distance) {
-      const curveLength = Math.max(0, getCurveLengthFromGeometry(state.vehicle));
-      const slew = Number(state.vehicle.sl) || 0;
-      const baseX = Number(vehicleVector?.x) || 0;
-      const baseY = Number(vehicleVector?.y) || 0;
-      const localPose = Math.abs(slew) < 0.001
-        ? integrateVehiclePoseFallback(vehicleVector, distance)
-        : integrateVehiclePoseFront(vehicleVector, distance);
-      const baseAngle = Number(vehicleVector?.angle) || 0;
-      const cosBase = Math.cos(baseAngle);
-      const sinBase = Math.sin(baseAngle);
-      return {
-        x: baseX + localPose.x * cosBase - localPose.y * sinBase,
-        y: baseY + localPose.x * sinBase + localPose.y * cosBase,
-        angle: baseAngle + localPose.angle,
-        theta: localPose.theta,
-        radius: Number(state.vehicle.radius) || 0,
-        curveLength
-      };
-    }
-
-    function buildVehicleCopies(vehicleVector = getVehicleVector(), terminalPose = state.vehicle.finalPose, curveLengthOverride = getCurveLengthFromGeometry(state.vehicle)) {
-      if (!vehicleVector) return [];
-      const curveLength = Math.max(0, Number(curveLengthOverride) || 0);
-      const slew = Number(state.vehicle.sl) || 0;
-      return buildVehicleCopiesForSlew(vehicleVector, curveLength, slew, Number(state.vehicle.radius) || 0, terminalPose);
-    }
-
-    function buildVehicleCopiesForSlew(vehicleVector, curveLength, slew, radius = 0, terminalPose = null) {
-      const sampleCount = curveLength === 0 ? 1 : Math.max(6, Math.ceil(curveLength * 4));
-      const copies = [];
-      for (let i = 0; i < sampleCount; i += 1) {
-        const t = sampleCount === 1 ? 0 : i / (sampleCount - 1);
-        const pose = sampleVehiclePoseForSlew(vehicleVector, curveLength * t, slew, curveLength, radius);
-        copies.push({
-          id: `vehicle-copy-${sampleCount}-${i}`,
-          x: pose.x,
-          y: pose.y,
-          angle: pose.angle,
-          theta: i === 0 ? 0 : pose.theta,
-          radius: pose.radius,
-          curveLength: pose.curveLength,
-          label: "Veh",
-          steerLabel: "Sv",
-          pathDistance: curveLength * t
-        });
-      }
-      if (copies.length && terminalPose && Number.isFinite(Number(terminalPose.x)) && Number.isFinite(Number(terminalPose.y))) {
-        const lastIndex = copies.length - 1;
-        copies[lastIndex] = {
-          ...copies[lastIndex],
-          x: Number(terminalPose.x) || 0,
-          y: Number(terminalPose.y) || 0,
-          angle: Number(terminalPose.angle) || 0,
-          theta: Number(terminalPose.theta) || 0,
-          radius: Number(terminalPose.radius) || radius,
-          curveLength: Number(terminalPose.curveLength) || curveLength,
-          pathDistance: curveLength
-        };
-      }
-      return copies;
-    }
-
-    function sampleVehiclePoseForSlew(vehicleVector, distance, slew = 0, curveLength = 0, radius = 0) {
-      const baseX = Number(vehicleVector?.x) || 0;
-      const baseY = Number(vehicleVector?.y) || 0;
-      const localPose = Math.abs(slew) < 0.001
-        ? integrateVehiclePoseFallbackForSlew(slew, distance)
-        : integrateVehiclePoseFrontForSlew(slew, distance);
-      const baseAngle = Number(vehicleVector?.angle) || 0;
-      const cosBase = Math.cos(baseAngle);
-      const sinBase = Math.sin(baseAngle);
-      return {
-        x: baseX + localPose.x * cosBase - localPose.y * sinBase,
-        y: baseY + localPose.x * sinBase + localPose.y * cosBase,
-        angle: baseAngle + localPose.angle,
-        theta: localPose.theta,
-        radius,
-        curveLength
-      };
-    }
-
-    function integrateVehiclePoseFrontForSlew(slew, distance) {
-      const invSlew = 1 / slew;
-      const phase = invSlew;
-      const travel = distance;
-      const phaseSpan = slew * travel;
-      const harmonicLimit = Math.max(12, Math.ceil(Math.abs(invSlew) + 24));
-      const besselValues = getBesselTable(slew, harmonicLimit + 1);
-      let integral = { re: 0, im: 0 };
-
-      for (let m = -harmonicLimit; m <= harmonicLimit; m += 1) {
-        const besselOrder = m - 1;
-        const besselValue = besselValues[Math.abs(besselOrder)] || 0;
-        const besselTerm = besselOrder < 0 && (Math.abs(besselOrder) % 2 === 1) ? -besselValue : besselValue;
-        const harmonic = m === 0
-          ? { re: phaseSpan, im: 0 }
-          : {
-              re: Math.sin(m * phaseSpan) / m,
-              im: (1 - Math.cos(m * phaseSpan)) / m
-            };
-        const term = complexMul(
-          complexMul(powMinusI(m - 1), { re: besselTerm, im: 0 }),
-          harmonic
-        );
-        integral = complexAdd(integral, term);
-      }
-
-      integral = complexScale(integral, 1 / slew);
-      const front = complexMul(complexExp(phase), integral);
-      const bodyDelta = (2 * Math.sin(phaseSpan / 2) ** 2) / slew;
-      const bodyVector = complexExp(bodyDelta);
-      const localRear = {
-        re: 1 + front.re - bodyVector.re,
-        im: front.im - bodyVector.im
-      };
-      return {
-        x: localRear.re,
-        y: localRear.im,
-        angle: bodyDelta,
-        theta: slew * travel
-      };
-    }
-
-    function integrateVehiclePoseFallbackForSlew(slew, distance) {
-      const travel = distance;
-      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin((slew * travel) / 2) ** 2) / slew;
-      const integralNodes = vehiclePoseQuadratureNodes;
-      const integralWeights = vehiclePoseQuadratureWeights;
-      const halfTravel = travel / 2;
-      let frontX = 1;
-      let frontY = 0;
-
-      for (let i = 0; i < integralNodes.length; i += 1) {
-        const s = halfTravel * (integralNodes[i] + 1);
-        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((slew * s) / 2) ** 2) / slew);
-        frontX += integralWeights[i] * Math.cos(phase) * halfTravel;
-        frontY += integralWeights[i] * Math.sin(phase) * halfTravel;
-      }
-
-      const rearX = frontX - Math.cos(bodyDelta);
-      const rearY = frontY - Math.sin(bodyDelta);
-      return {
-        x: rearX,
-        y: rearY,
-        angle: bodyDelta,
-        theta: slew * travel
-      };
-    }
-
-    function evaluateVehicleStampedPathForSl(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
-      if (!vehicleVector) return [];
-      const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
-      return buildVehicleCopiesForSlew(vehicleVector, curveLength, Number(candidateSl) || 0, Number(geometry?.radius) || 0);
-    }
-
-    function getCurrentTurnBisectorGeometry(vehicleVector = getVehicleVector(), geometry = state.vehicle) {
-      const radius = Number(geometry?.radius) || 0;
-      const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
-      if (!vehicleVector || radius === 0) {
-        return {
-          valid: false,
-          radius,
-          curveLength,
-          turnAngle: 0,
-          center: null,
-          bisectorAngle: 0,
-          bisectorOrigin: null,
-          bisectorDir: null
-        };
-      }
-      const turnAngle = curveLength / radius;
-      const center = { x: 0, y: radius };
-      const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
-      const bisectorAngle = startAngle + turnAngle / 2;
-      const bisectorDir = {
-        x: Math.cos(bisectorAngle),
-        y: Math.sin(bisectorAngle)
-      };
-      return {
-        valid: true,
-        radius,
-        curveLength,
-        turnAngle,
-        center,
-        startAngle,
-        bisectorAngle,
-        bisectorOrigin: center,
-        bisectorDir
-      };
-    }
-
-    function normalizePointDirection(vector) {
-      const length = Math.hypot(Number(vector?.x) || 0, Number(vector?.y) || 0);
-      if (!length) return null;
-      return {
-        x: (Number(vector?.x) || 0) / length,
-        y: (Number(vector?.y) || 0) / length
-      };
-    }
-
-    function dot2(a, b) {
-      return (Number(a?.x) || 0) * (Number(b?.x) || 0) + (Number(a?.y) || 0) * (Number(b?.y) || 0);
-    }
-
-    function cross2(a, b) {
-      return (Number(a?.x) || 0) * (Number(b?.y) || 0) - (Number(a?.y) || 0) * (Number(b?.x) || 0);
-    }
-
-    function findPolylineBisectorIntersection(polyline, bisectorOrigin, bisectorDir) {
-      if (!Array.isArray(polyline) || polyline.length < 2 || !bisectorOrigin || !bisectorDir) return null;
-      const lineDir = normalizePointDirection(bisectorDir);
-      if (!lineDir) return null;
-      let best = null;
-      let pathDistance = 0;
-
-      for (let i = 0; i < polyline.length - 1; i += 1) {
-        const a = polyline[i];
-        const b = polyline[i + 1];
-        const segment = { x: b.x - a.x, y: b.y - a.y };
-        const denom = cross2(segment, lineDir);
-        if (Math.abs(denom) < 1e-12) {
-          pathDistance += Math.hypot(segment.x, segment.y);
-          continue;
-        }
-        const diff = { x: bisectorOrigin.x - a.x, y: bisectorOrigin.y - a.y };
-        const u = cross2(diff, lineDir) / denom;
-        const v = cross2(diff, segment) / denom;
-        if (u < -1e-9 || u > 1 + 1e-9 || v < -1e-9) {
-          pathDistance += Math.hypot(segment.x, segment.y);
-          continue;
-        }
-        const clampedU = clamp(u, 0, 1);
-        const intersection = {
-          x: a.x + segment.x * clampedU,
-          y: a.y + segment.y * clampedU
-        };
-        const tangent = normalizePointDirection(segment);
-        const candidate = {
-          point: intersection,
-          tangent,
-          segmentIndex: i,
-          segmentT: clampedU,
-          pathDistance: pathDistance + Math.hypot(segment.x, segment.y) * clampedU,
-          lineT: v
-        };
-        if (!best || candidate.pathDistance < best.pathDistance) {
-          best = candidate;
-        }
-        pathDistance += Math.hypot(segment.x, segment.y);
-      }
-
-      return best;
-    }
-
-    function resolveFinalVehiclePose(vehicleVector, geometry, terminalPose) {
-      if (!terminalPose) return null;
-      return {
-        x: Number(terminalPose.x) || 0,
-        y: Number(terminalPose.y) || 0,
-        angle: Number(terminalPose.angle) || 0,
-        theta: Number(terminalPose.theta) || 0,
-        radius: Number(geometry?.radius) || 0,
-        curveLength: getCurveLengthFromGeometry(geometry)
-      };
-    }
-
-    function solveVehicleHeadingChangeForBisectorAlignment(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
-      const bisectorGeometry = getCurrentTurnBisectorGeometry(vehicleVector, geometry);
-      if (!bisectorGeometry.valid) {
-        return {
-          success: false,
-          headingChange: NaN,
-          curveLength: NaN,
-          error: NaN,
-          reason: "invalid-geometry",
-          geometry: bisectorGeometry,
-          evaluation: null,
-          bracket: null,
-          iterations: 0
-        };
-      }
-      const startHeadingChange = Math.max(0, getHeadingChange(geometry));
-      const maxSpan = Number.isFinite(Number(geometry?.maxHeadingChange)) ? Math.abs(Number(geometry.maxHeadingChange)) : 100;
-      const initialSpan = Math.max(0.5, startHeadingChange * 0.5 + 0.5);
-      const fn = (headingChange) => evaluateVehicleBisectorAlignmentError(
-        candidateSl,
-        vehicleVector,
-        { ...geometry, headingChange }
-      ).rearDistance;
-
-      const bracket = findPositiveSignChangeBracket(fn, startHeadingChange, initialSpan, maxSpan);
-      if (bracket) {
-        const solved = solveBracketedRoot(fn, bracket.a, bracket.b, bracket.fa, bracket.fb, {
-          tolerance: 1e-7,
-          maxIterations: 64
-        });
-        const headingChange = Math.max(0, Number.isFinite(Number(solved.root)) ? Number(solved.root) : startHeadingChange);
-        const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
-        return {
-          success: solved.success && Number.isFinite(evaluation.rearDistance) && Math.abs(evaluation.rearDistance) <= 1e-7,
-          headingChange,
-          curveLength: getCurveLengthFromGeometry({ ...geometry, headingChange }),
-          error: evaluation.rearDistance,
-          reason: solved.success ? "converged" : solved.reason,
-          geometry: evaluation.geometry,
-          evaluation,
-          bracket: solved.bracket,
-          iterations: solved.iterations,
-          value: evaluation.rearDistance
-        };
-      }
-
-      const fallback = searchPositiveMinimum(
-        (headingChange) => {
-          const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
-          return Number.isFinite(evaluation.rearDistance) ? evaluation.rearDistance ** 2 : Infinity;
-        },
-        startHeadingChange,
-        maxSpan,
-        5,
-        21
-      );
-      const headingChange = Math.max(0, fallback.x);
-      const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
-      return {
-        success: Number.isFinite(evaluation.rearDistance) && Math.abs(evaluation.rearDistance) <= 1e-7,
-        headingChange,
-        curveLength: getCurveLengthFromGeometry({ ...geometry, headingChange }),
-        error: evaluation.rearDistance,
-        reason: "minimum-search",
-        geometry: evaluation.geometry,
-        evaluation,
-        bracket: null,
-        iterations: fallback.evaluations,
-        value: evaluation.rearDistance
-      };
-    }
-
-    function evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
-      const bisectorGeometry = getCurrentTurnBisectorGeometry(vehicleVector, geometry);
-      if (!bisectorGeometry.valid) {
-        return {
-          sl: candidateSl,
-          error: NaN,
-          geometry: bisectorGeometry,
-          intersection: null,
-          endPose: null,
-          rearDistance: NaN,
-          bodyAlignment: NaN
-        };
-      }
-      const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
-      const radius = Number(geometry?.radius) || 0;
-      const endPose = sampleVehiclePoseForSlew(vehicleVector, curveLength, Number(candidateSl) || 0, curveLength, radius);
-      const rearDistance = cross2(
-        { x: (Number(endPose.x) || 0) - bisectorGeometry.bisectorOrigin.x, y: (Number(endPose.y) || 0) - bisectorGeometry.bisectorOrigin.y },
-        bisectorGeometry.bisectorDir
-      );
-      const bodyDirection = normalizePointDirection({
-        x: Math.cos(Number(endPose.angle) || 0),
-        y: Math.sin(Number(endPose.angle) || 0)
-      });
-      const bodyAlignment = bodyDirection ? dot2(bodyDirection, bisectorGeometry.bisectorDir) : NaN;
-      const error = rearDistance;
-      return {
-        sl: candidateSl,
-        error,
-        geometry: bisectorGeometry,
-        pathCopies: [],
-        intersection: null,
-        endPose,
-        rearDistance,
-        bodyAlignment
-      };
-    }
-
-    function evaluateVehicleCombinedAlignment(candidateSl, vehicleVector = getVehicleVector(), geometry = state.vehicle) {
-      const inner = solveVehicleHeadingChangeForBisectorAlignment(candidateSl, vehicleVector, geometry);
-      const evaluation = inner.evaluation || evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange: inner.headingChange });
-      if (!evaluation.geometry?.valid || !Number.isFinite(evaluation.endPose?.x) || !Number.isFinite(evaluation.endPose?.y)) {
-        return {
-          ...evaluation,
-          inner,
-          bodyAngleError: NaN,
-          score: NaN
-        };
-      }
-      const bodyAngleError = Math.asin(clamp(Number(evaluation.bodyAlignment) || 0, -1, 1));
-      const score = bodyAngleError ** 2;
-      return {
-        ...evaluation,
-        inner,
-        headingChange: inner.headingChange,
-        curveLength: inner.curveLength,
-        bodyAngleError,
-        score
-      };
-    }
-
-    function buildBracketedSamples(fn, center, span, sampleCount) {
-      const samples = [];
-      const count = Math.max(2, sampleCount);
-      for (let i = 0; i < count; i += 1) {
-        const t = count === 1 ? 0 : i / (count - 1);
-        const x = center - span + (2 * span) * t;
-        const y = fn(x);
-        samples.push({ x, y });
-      }
-      return samples;
-    }
-
-    function findPositiveSignChangeBracket(fn, center, initialSpan = 0.5, maxSpan = 128) {
-      let span = Math.max(1e-3, Math.abs(initialSpan) || 0.5);
-      const start = Math.max(0, Number(center) || 0);
-      for (let attempt = 0; attempt < 12 && span <= maxSpan; attempt += 1) {
-        const left = Math.max(0, start - span);
-        const right = Math.max(left + 1e-6, start + span);
-        const samples = buildBracketedSamples(fn, (left + right) / 2, (right - left) / 2, 11);
-        for (let i = 0; i < samples.length - 1; i += 1) {
-          const leftSample = samples[i];
-          const rightSample = samples[i + 1];
-          if (!Number.isFinite(leftSample.y) || !Number.isFinite(rightSample.y)) continue;
-          if (leftSample.y === 0) {
-            return { a: leftSample.x, b: leftSample.x, fa: leftSample.y, fb: leftSample.y, samples };
-          }
-          if (rightSample.y === 0) {
-            return { a: rightSample.x, b: rightSample.x, fa: rightSample.y, fb: rightSample.y, samples };
-          }
-          if (leftSample.y * rightSample.y < 0) {
-            return { a: leftSample.x, b: rightSample.x, fa: leftSample.y, fb: rightSample.y, samples };
-          }
-        }
-        span *= 2;
-      }
-      return null;
-    }
-
-    function searchPositiveMinimum(fn, center, maxSpan = 128, passes = 5, sampleCount = 21) {
-      const clampSl = (value) => clamp(Number(value) || 0, 0, maxSpan);
-      let left = 0;
-      let right = Math.max(0, maxSpan);
-      let best = { x: clampSl(center), y: Infinity };
-      let evaluations = 0;
-
-      const evaluate = (x) => {
-        const value = fn(x);
-        evaluations += 1;
-        if (Number.isFinite(value) && value < best.y) {
-          best = { x, y: value };
-        }
-        return value;
-      };
-
-      evaluate(best.x);
-
-      for (let pass = 0; pass < passes; pass += 1) {
-        const count = Math.max(5, sampleCount - pass * 2);
-        const width = Math.max(1e-6, right - left);
-        let localBestX = best.x;
-        let localBestY = best.y;
-        let localBestIndex = 0;
-        let previousX = left;
-        let previousY = evaluate(left);
-
-        for (let i = 1; i < count; i += 1) {
-          const t = i / (count - 1);
-          const x = left + width * t;
-          const y = evaluate(x);
-          if (Number.isFinite(y) && y < localBestY) {
-            localBestX = x;
-            localBestY = y;
-            localBestIndex = i;
-          }
-          previousX = x;
-          previousY = y;
-        }
-
-        const step = width / (count - 1);
-        left = clampSl(localBestX - step);
-        right = clampSl(localBestX + step);
-        if (Math.abs(right - left) <= 1e-6) {
-          break;
-        }
-        if (localBestIndex === 0) {
-          right = Math.min(maxSpan, left + Math.max(step * 2, 1e-3));
-        } else if (localBestIndex === count - 1) {
-          left = Math.max(0, right - Math.max(step * 2, 1e-3));
-        }
-      }
-
-      const finalEvaluation = fn(best.x);
-      evaluations += 1;
-      return {
-        x: best.x,
-        y: finalEvaluation,
-        evaluations
-      };
-    }
-
-    function findSignChangeBracket(fn, center, initialSpan = 0.5, maxSpan = 128) {
-      let span = Math.max(1e-3, Math.abs(initialSpan) || 0.5);
-      for (let attempt = 0; attempt < 12 && span <= maxSpan; attempt += 1) {
-        const samples = buildBracketedSamples(fn, center, span, 11);
-        for (let i = 0; i < samples.length - 1; i += 1) {
-          const left = samples[i];
-          const right = samples[i + 1];
-          if (!Number.isFinite(left.y) || !Number.isFinite(right.y)) continue;
-          if (left.y === 0) {
-            return { a: left.x, b: left.x, fa: left.y, fb: left.y, samples };
-          }
-          if (right.y === 0) {
-            return { a: right.x, b: right.x, fa: right.y, fb: right.y, samples };
-          }
-          if (left.y * right.y < 0) {
-            return { a: left.x, b: right.x, fa: left.y, fb: right.y, samples };
-          }
-        }
-        span *= 2;
-      }
-      return null;
-    }
-
-    function solveBracketedRoot(fn, a, b, fa = fn(a), fb = fn(b), options = {}) {
-      const tolerance = options.tolerance ?? 1e-7;
-      const maxIterations = options.maxIterations ?? 64;
-      let left = a;
-      let right = b;
-      let fLeft = fa;
-      let fRight = fb;
-      if (!Number.isFinite(fLeft) || !Number.isFinite(fRight) || fLeft * fRight > 0) {
-        return {
-          success: false,
-          reason: "invalid-bracket",
-          root: NaN,
-          iterations: 0,
-          bracket: { left, right, fLeft, fRight }
-        };
-      }
-      if (Math.abs(fLeft) <= tolerance) {
-        return {
-          success: true,
-          reason: "endpoint-root",
-          root: left,
-          iterations: 0,
-          bracket: { left, right, fLeft, fRight }
-        };
-      }
-      if (Math.abs(fRight) <= tolerance) {
-        return {
-          success: true,
-          reason: "endpoint-root",
-          root: right,
-          iterations: 0,
-          bracket: { left, right, fLeft, fRight }
-        };
-      }
-
-      let candidate = left;
-      let fCandidate = fLeft;
-
-      for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
-        candidate = Number.isFinite(fLeft) && Number.isFinite(fRight) && fRight !== fLeft
-          ? right - (fRight * (right - left)) / (fRight - fLeft)
-          : (left + right) / 2;
-        if (!Number.isFinite(candidate) || candidate <= Math.min(left, right) || candidate >= Math.max(left, right)) {
-          candidate = (left + right) / 2;
-        }
-        fCandidate = fn(candidate);
-        if (!Number.isFinite(fCandidate)) {
-          candidate = (left + right) / 2;
-          fCandidate = fn(candidate);
-        }
-        if (!Number.isFinite(fCandidate)) {
-          return {
-            success: false,
-            reason: "non-finite-evaluation",
-            root: NaN,
-            iterations: iteration,
-            bracket: { left, right, fLeft, fRight }
-          };
-        }
-        if (Math.abs(fCandidate) <= tolerance || Math.abs(right - left) <= tolerance) {
-          return {
-            success: true,
-            reason: "converged",
-            root: candidate,
-            iterations: iteration,
-            bracket: { left, right, fLeft, fRight },
-            value: fCandidate
-          };
-        }
-        if (fLeft * fCandidate <= 0) {
-          right = candidate;
-          fRight = fCandidate;
-        } else {
-          left = candidate;
-          fLeft = fCandidate;
-        }
-      }
-
-      return {
-        success: false,
-        reason: "max-iterations",
-        root: candidate,
-        iterations: maxIterations,
-        bracket: { left, right, fLeft, fRight },
-        value: fCandidate
-      };
-    }
-
-    function solveVehicleSlForBisectorAlignment(vehicleVector, options = {}) {
-      if (!vehicleVector) {
-        return {
-          success: false,
-          sl: NaN,
-          error: NaN,
-          reason: "missing-vehicle-vector",
-          initialSl: Number.isFinite(Number(options.initialSl)) ? Number(options.initialSl) : 0.01,
-          initialSpan: Number.isFinite(Number(options.initialSpan)) ? Math.abs(Number(options.initialSpan)) : 0.5,
-          maxSpan: Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128,
-          geometry: options.geometry || { radius: 4, headingChange: Math.PI / 2 },
-          evaluation: null,
-          bracket: null,
-          iterations: 0
-        };
-      }
-      const geometry = options.geometry || { radius: 4, headingChange: Math.PI / 2 };
-      const startSl = Math.max(0, Number.isFinite(Number(options.initialSl))
-        ? Number(options.initialSl)
-        : 0.01);
-      const maxSpan = Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128;
-      const fn = (sl) => evaluateVehicleCombinedAlignment(sl, vehicleVector, geometry).score;
-      const outerPasses = Number.isFinite(Number(options.passes)) ? Math.max(1, Number(options.passes)) : 5;
-      const outerSamples = Number.isFinite(Number(options.sampleCount)) ? Math.max(5, Number(options.sampleCount)) : 21;
-      const solved = searchPositiveMinimum(fn, startSl, maxSpan, outerPasses, outerSamples);
-      const evaluation = evaluateVehicleCombinedAlignment(solved.x, vehicleVector, geometry);
-      const tolerance = Number.isFinite(Number(options.tolerance)) ? Math.abs(Number(options.tolerance)) : 1e-7;
-      const bodyTolerance = Number.isFinite(Number(options.bodyTolerance)) ? Math.abs(Number(options.bodyTolerance)) : 1e-6;
-      const rearAligned = Number.isFinite(evaluation.rearDistance) && Math.abs(evaluation.rearDistance) <= tolerance;
-      const bodyAligned = Number.isFinite(evaluation.bodyAlignment) && Math.abs(evaluation.bodyAlignment) <= bodyTolerance;
-      return {
-        success: Boolean(rearAligned && bodyAligned),
-        sl: Math.max(0, solved.x),
-        headingChange: Math.max(0, Number(evaluation.headingChange) || 0),
-        curveLength: Math.max(0, Number(evaluation.curveLength) || 0),
-        error: evaluation.score,
-        reason: rearAligned && bodyAligned ? "converged" : "alignment-mismatch",
-        initialSl: startSl,
-        maxSpan,
-        geometry: evaluation.geometry,
-        intersection: evaluation.intersection,
-        evaluation,
-        inner: evaluation.inner || null,
-        iterations: solved.evaluations,
-        value: evaluation.score,
-        rearDistance: evaluation.rearDistance,
-        bodyAlignment: evaluation.bodyAlignment,
-        bodyAngleError: evaluation.bodyAngleError
-      };
-    }
-
-    function getThetaValue() {
-      return Number(state.vehicleCopies[0]?.theta) || 0;
-    }
-
-    function getRccPoint(vehicleVector = getVehicleVector()) {
-      if (!vehicleVector) return null;
-      const theta = getThetaValue();
-      if (theta === 0) return null;
-      const rear = { x: vehicleVector.x, y: vehicleVector.y };
-      const front = {
-        x: rear.x + Math.cos(vehicleVector.angle) * vehicleVector.length,
-        y: rear.y + Math.sin(vehicleVector.angle) * vehicleVector.length
-      };
-      const rearNormal = { x: -Math.sin(vehicleVector.angle), y: Math.cos(vehicleVector.angle) };
-      const steerNormal = { x: -Math.sin(vehicleVector.angle + theta), y: Math.cos(vehicleVector.angle + theta) };
-      return intersectLines(rear, rearNormal, front, steerNormal);
-    }
-
     function saveState() {
-      enforceAnchors();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializableState()));
     }
 
-    function getVehicleVector() {
-      return state.vectors.find(isVehicleVector) || state.vectors[0] || null;
-    }
-
-    function getVehicleEnd(vehicleVector = getVehicleVector()) {
-      if (!vehicleVector) return { x: 1, y: 0 };
-      return {
-        x: vehicleVector.x + Math.cos(vehicleVector.angle) * vehicleVector.length,
-        y: vehicleVector.y + Math.sin(vehicleVector.angle) * vehicleVector.length
-      };
-    }
-
-    function enforceAnchors() {
-      const vehicleVector = state.vectors.find(isVehicleVector);
-      if (vehicleVector) {
-        vehicleVector.label = "Veh";
-        vehicleVector.x = 0;
-        vehicleVector.y = 0;
-        vehicleVector.length = 1;
-      }
-    }
-
     function serializableState() {
-      const { rpc: _legacyRpc, theta: _legacyTheta, finalPose: _finalPose, ...vehicle } = state.vehicle;
       return {
         view: state.view,
         ui: state.ui,
-        vehicle,
-        vehicleCopies: [],
         selectedId: state.selectedId,
         vectors: state.vectors
       };
@@ -1444,18 +502,6 @@
 
     function dist(a, b) {
       return Math.hypot(a.x - b.x, a.y - b.y);
-    }
-
-    function intersectLines(p1, d1, p2, d2) {
-      const det = d1.x * d2.y - d1.y * d2.x;
-      if (Math.abs(det) < 1e-9) return null;
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const t = (dx * d2.y - dy * d2.x) / det;
-      return {
-        x: p1.x + d1.x * t,
-        y: p1.y + d1.y * t
-      };
     }
 
     function chooseGridStep(scale) {
@@ -1559,229 +605,14 @@
       ctx.fill();
     }
 
-    function drawVehicleInstance(instance, options = {}) {
-      const alpha = options.alpha ?? 1;
-      const bodyWidth = options.bodyWidth ?? 3;
-      const steerWidth = options.steerWidth ?? 2.5;
-      const bodyLabel = options.label ?? "Veh";
-      const steerLabel = options.steerLabel ?? "Sv";
-      const bodyAngle = Number(instance.angle) || 0;
-      const theta = Number(instance.theta) || 0;
-      const rear = { x: Number(instance.x) || 0, y: Number(instance.y) || 0 };
-      const front = {
-        x: rear.x + Math.cos(bodyAngle),
-        y: rear.y + Math.sin(bodyAngle)
-      };
-      const rearS = worldToScreen(rear.x, rear.y);
-      const frontS = worldToScreen(front.x, front.y);
-      const steerEnd = {
-        x: front.x + Math.cos(bodyAngle + theta) * 0.25,
-        y: front.y + Math.sin(bodyAngle + theta) * 0.25
-      };
-      const steerStartS = worldToScreen(front.x, front.y);
-      const steerEndS = worldToScreen(steerEnd.x, steerEnd.y);
-
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = `rgba(125,211,252,${Math.min(1, 0.82 * alpha)})`;
-      ctx.lineWidth = bodyWidth;
-      ctx.beginPath();
-      ctx.moveTo(rearS.x, rearS.y);
-      ctx.lineTo(frontS.x, frontS.y);
-      ctx.stroke();
-
-      ctx.strokeStyle = `rgba(251,191,36,${Math.min(1, 0.82 * alpha)})`;
-      ctx.lineWidth = steerWidth;
-      drawArrow(steerStartS, steerEndS, ctx.strokeStyle, ctx.strokeStyle, steerWidth);
-
-      drawNode(rearS.x, rearS.y, `rgba(125,211,252,${Math.min(1, 0.9 * alpha)})`, bodyLabel);
-      drawNode(frontS.x, frontS.y, `rgba(251,191,36,${Math.min(1, 0.9 * alpha)})`, steerLabel);
-
-      ctx.fillStyle = `rgba(237,243,255,${Math.min(1, 0.7 * alpha)})`;
-      ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText(`${bodyLabel} + ${steerLabel}`, rearS.x + 10, rearS.y - 10);
-      ctx.restore();
-    }
-
     function vectorEndpoints(vector) {
-      const vehicleVector = getVehicleVector();
-      const start = isVehicleVector(vector)
-        ? { x: 0, y: 0 }
-        : isSteerVector(vector)
-          ? getVehicleEnd(vehicleVector)
-          : { x: vector.x, y: vector.y };
-      const length = isSteerVector(vector) ? 0.25 : isVehicleVector(vector) ? 1 : vector.length;
+      const start = { x: vector.x, y: vector.y };
+      const length = vector.length;
       const end = {
         x: start.x + Math.cos(vector.angle) * length,
         y: start.y + Math.sin(vector.angle) * length
       };
       return { start, end };
-    }
-
-    function drawVehicle() {
-      if (!state.ui.vehicle) return;
-      const radius = Number(state.vehicle.radius) || 0;
-      const curveLength = Math.max(0, getCurveLengthFromGeometry(state.vehicle));
-      const turnGeometry = getCurrentTurnBisectorGeometry(getVehicleVector(), state.vehicle);
-      const vehicleVector = normalizeVector(state.vectors.find(isVehicleVector) || state.vectors[0] || { x: 0, y: 0, angle: 0, length: 1, label: "Veh", color: "#7dd3fc" });
-      const pose = state.vehicle.finalPose || sampleVehiclePoseForSlew(
-        vehicleVector,
-        curveLength,
-        Number(state.vehicle.sl) || 0,
-        curveLength,
-        radius
-      );
-      const bodyAngle = Number(pose.angle) || 0;
-      const rear = {
-        x: Number(pose.x) || 0,
-        y: Number(pose.y) || 0
-      };
-      const bodyLength = Math.max(0.25, Number(vehicleVector.length) || 1);
-      const front = {
-        x: rear.x + Math.cos(bodyAngle) * bodyLength,
-        y: rear.y + Math.sin(bodyAngle) * bodyLength
-      };
-      const rearS = worldToScreen(rear.x, rear.y);
-      const frontS = worldToScreen(front.x, front.y);
-      ctx.save();
-
-      if (turnGeometry.valid && radius !== 0) {
-        const absRadius = Math.abs(turnGeometry.radius);
-        const center = turnGeometry.center;
-        const centerS = worldToScreen(center.x, center.y);
-        const sampleCount = Math.max(16, Math.ceil(Math.abs(turnGeometry.turnAngle) * 24));
-        const arcPoints = [];
-        for (let i = 0; i <= sampleCount; i += 1) {
-          const t = sampleCount === 0 ? 0 : i / sampleCount;
-          const angle = turnGeometry.startAngle + turnGeometry.turnAngle * t;
-          arcPoints.push({
-            x: center.x + Math.cos(angle) * absRadius,
-            y: center.y + Math.sin(angle) * absRadius
-          });
-        }
-
-        ctx.save();
-        ctx.setLineDash([6, 6]);
-        ctx.strokeStyle = "rgba(126,240,191,0.58)";
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        for (let i = 0; i < arcPoints.length; i += 1) {
-          const p = worldToScreen(arcPoints[i].x, arcPoints[i].y);
-          if (i === 0) ctx.moveTo(p.x, p.y);
-          else ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
-
-        ctx.strokeStyle = "rgba(126,240,191,0.42)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(centerS.x, centerS.y);
-        ctx.lineTo(
-          centerS.x + turnGeometry.bisectorDir.x * absRadius * 1.85 * state.view.scale,
-          centerS.y - turnGeometry.bisectorDir.y * absRadius * 1.85 * state.view.scale
-        );
-        ctx.stroke();
-
-        const arcBisectorS = worldToScreen(
-          center.x + Math.cos(turnGeometry.bisectorAngle) * absRadius,
-          center.y + Math.sin(turnGeometry.bisectorAngle) * absRadius
-        );
-        const arcEndS = worldToScreen(arcPoints[arcPoints.length - 1].x, arcPoints[arcPoints.length - 1].y);
-        ctx.fillStyle = "rgba(126,240,191,0.92)";
-        ctx.beginPath();
-        ctx.arc(centerS.x, centerS.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(arcBisectorS.x, arcBisectorS.y, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(arcEndS.x, arcEndS.y, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "rgba(237,243,255,0.88)";
-        ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-        ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
-        ctx.fillText(`Al = ${curveLength.toFixed(2)}`, arcEndS.x + 10, arcEndS.y - 8);
-        ctx.restore();
-      }
-
-      ctx.strokeStyle = "rgba(125,211,252,0.92)";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(rearS.x, rearS.y);
-      ctx.lineTo(frontS.x, frontS.y);
-      ctx.stroke();
-      const midWheelbase = { x: (rearS.x + frontS.x) / 2, y: (rearS.y + frontS.y) / 2 };
-      ctx.fillStyle = "rgba(125,211,252,0.95)";
-      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText("1", midWheelbase.x + 8, midWheelbase.y - 8);
-
-      drawNode(rearS.x, rearS.y, "#7dd3fc", "Rp");
-      drawNode(frontS.x, frontS.y, "#fbbf24", "S");
-
-      const label = `θ = ${formatAngle(Number(pose.theta) || getThetaValue())}`;
-      ctx.fillStyle = "rgba(237,243,255,0.88)";
-      ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText(label, frontS.x + 12, frontS.y - 18);
-      ctx.restore();
-    }
-
-    function drawVehicleCopies() {
-      if (!state.vehicleCopies.length) return;
-      for (let i = 0; i < state.vehicleCopies.length; i += 1) {
-        const copy = state.vehicleCopies[i];
-        const alpha = 0.14 + (i / Math.max(1, state.vehicleCopies.length - 1)) * 0.42;
-        drawVehicleInstance(copy, {
-          alpha,
-          bodyWidth: 2.5,
-          steerWidth: 2,
-          label: `V${i + 1}`,
-          steerLabel: "S"
-        });
-      }
-    }
-
-    function drawVehiclePathTrace() {
-      if (!state.vehicleCopies.length) return;
-      const points = state.vehicleCopies.map(copy => worldToScreen(copy.x, copy.y));
-      if (points.length < 2) return;
-
-      ctx.save();
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-
-      // Draw the overall path with a stronger stroke so the vehicle motion is obvious.
-      ctx.strokeStyle = "rgba(126,240,191,0.72)";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i += 1) {
-        ctx.lineTo(points[i].x, points[i].y);
-      }
-      ctx.stroke();
-
-      // Add a subtle fading overlay to hint at direction without overpowering the vehicle copies.
-      ctx.strokeStyle = "rgba(125,211,252,0.28)";
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i += 1) {
-        ctx.lineTo(points[i].x, points[i].y);
-      }
-      ctx.stroke();
-
-      // Mark the start and end so the line reads as a path, not just a decoration.
-      const start = points[0];
-      const end = points[points.length - 1];
-      ctx.fillStyle = "rgba(125,211,252,0.95)";
-      ctx.beginPath();
-      ctx.arc(start.x, start.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(126,240,191,0.95)";
-      ctx.beginPath();
-      ctx.arc(end.x, end.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.restore();
     }
 
     function drawNode(x, y, color, label) {
@@ -1796,37 +627,20 @@
 
     function drawVectors() {
       for (const vector of state.vectors) {
-        const sourceVector = isVehicleVector(vector) ? { ...vector, label: "Veh", color: "#7dd3fc" } : vector;
-        const { start, end } = vectorEndpoints(sourceVector);
+        const { start, end } = vectorEndpoints(vector);
         const s = worldToScreen(start.x, start.y);
         const e = worldToScreen(end.x, end.y);
         const selected = state.selectedId === vector.id;
-        const thetaVector = isThetaVector(sourceVector);
-        const vehicleVector = getVehicleVector();
-        const thetaAngle = (vehicleVector ? vehicleVector.angle : 0) + getThetaValue();
-        const thetaTip = thetaVector
-          ? worldToScreen(
-              start.x + Math.cos(thetaAngle) * 0.22,
-              start.y + Math.sin(thetaAngle) * 0.22
-            )
-          : null;
-
-        const stroke = isVehicleVector(sourceVector) ? "#7dd3fc" : (selected ? "rgba(255,255,255,0.92)" : sourceVector.color);
-        if (thetaVector) {
-          drawArrow(s, thetaTip, stroke, sourceVector.color, 3);
-        } else {
-          drawArrow(s, e, stroke, sourceVector.color, selected ? 4 : 3);
-        }
-        drawNode(s.x, s.y, sourceVector.color, sourceVector.label?.trim() ? sourceVector.label.trim()[0].toUpperCase() : "V");
-        drawHandle(s.x, s.y, selected ? "#ffffff" : sourceVector.color);
-        if (!thetaVector) {
-          drawHandle(e.x, e.y, selected ? "#ffffff" : sourceVector.color);
-        }
+        const stroke = selected ? "rgba(255,255,255,0.92)" : vector.color;
+        drawArrow(s, e, stroke, vector.color, selected ? 4 : 3);
+        const labelText = vector.label || "Vector";
+        drawNode(s.x, s.y, vector.color, labelText?.trim() ? labelText.trim()[0].toUpperCase() : "V");
+        drawHandle(s.x, s.y, selected ? "#ffffff" : vector.color);
+        drawHandle(e.x, e.y, selected ? "#ffffff" : vector.color);
 
         ctx.fillStyle = "rgba(237,243,255,0.88)";
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-        const labelPoint = thetaVector ? thetaTip : e;
-        ctx.fillText(sourceVector.label || "Vector", labelPoint.x + 8, labelPoint.y - 8);
+        ctx.fillText(labelText, e.x + 8, e.y - 8);
       }
     }
 
@@ -1845,19 +659,8 @@
       ctx.clearRect(0, 0, rect.width, rect.height);
       ctx.fillStyle = "rgba(6, 10, 20, 0.38)";
       ctx.fillRect(0, 0, rect.width, rect.height);
-
-      state.vehicleCopies = buildVehicleCopies();
-
-      if (initialVehicleSequenceFitPending) {
-        fitView();
-        initialVehicleSequenceFitPending = false;
-        scheduleRender();
-      }
       drawGrid();
       drawAxes();
-      drawVehiclePathTrace();
-      drawVehicleCopies();
-      drawVehicle();
       drawVectors();
 
       updateMetrics();
@@ -1867,7 +670,7 @@
 
     function updateMetrics() {
       const selected = state.vectors.find(v => v.id === state.selectedId) || null;
-      selectedPill.textContent = `Selected: ${selected ? (selected.label || "vector") : "none"}`;
+      selectedPill.textContent = `Selected: ${selected ? (selected.label || "Vector") : "none"}`;
       selectionValue.textContent = selected ? (selected.label || "Vector") : "None";
 
       modePill.textContent = `Mode: ${mode}`;
@@ -1884,16 +687,27 @@
     function updateDependentList() {
       if (!dependentListDirty) return;
       dependentList.innerHTML = "";
-      const entries = [{
-        label: "Sl",
-        value: Number.isFinite(Number(state.vehicle.sl)) ? Number(state.vehicle.sl).toFixed(3) : "NaN",
-        note: "Solved steering slew for the current radius and heading change."
+      const selected = state.vectors.find(v => v.id === state.selectedId) || null;
+      const entries = selected ? [{
+        label: "Label",
+        value: selected.label || "Vector",
+        note: "Current vector label."
       }, {
-        label: "Rp",
-        value: state.vehicle.finalPose
-          ? `x: ${formatFixed10(state.vehicle.finalPose.x)}, y: ${formatFixed10(state.vehicle.finalPose.y)}, psi: ${formatFixed10(state.vehicle.finalPose.angle)}, Cl: ${formatFixed10(state.vehicle.finalPose.curveLength)}`
-          : "NaN",
-        note: "Final rear pose returned by the algorithm."
+        label: "Position",
+        value: `x: ${formatFixed10(selected.x)}, y: ${formatFixed10(selected.y)}`,
+        note: "Origin point in world coordinates."
+      }, {
+        label: "Angle",
+        value: formatAngle(selected.angle),
+        note: "Direction measured counterclockwise from the x-axis."
+      }, {
+        label: "Length",
+        value: Number.isFinite(Number(selected.length)) ? Number(selected.length).toFixed(3) : "NaN",
+        note: "Vector length in world units."
+      }] : [{
+        label: "Selection",
+        value: "None",
+        note: "Click a vector to inspect it."
       }];
       for (const entry of entries) {
         const control = document.createElement("div");
@@ -1918,25 +732,6 @@
 
     function degToRad(value) {
       return (value * Math.PI) / 180;
-    }
-
-    function getHeadingChangeStep() {
-      return degToRad(5);
-    }
-
-    function snapHeadingChange(value) {
-      const step = getHeadingChangeStep();
-      const numeric = Math.max(0, Number(value) || 0);
-      return Math.round(numeric / step) * step;
-    }
-
-    function getHeadingChange(geometry = state.vehicle) {
-      return Math.max(0, Number(geometry?.headingChange) || 0);
-    }
-
-    function getCurveLengthFromGeometry(geometry = state.vehicle) {
-      const radius = Number(geometry?.radius) || 0;
-      return radius * getHeadingChange(geometry);
     }
 
     function radToDeg(value) {
@@ -1976,10 +771,10 @@
         if (dist({ x: px, y: py }, s) <= hitRadius) {
           return { vector, kind: "origin", start, end };
         }
-        if (!isSteerVector(vector) && dist({ x: px, y: py }, e) <= hitRadius) {
+        if (dist({ x: px, y: py }, e) <= hitRadius) {
           return { vector, kind: "end", start, end };
         }
-        if (!isSteerVector(vector) && distanceToSegment(point, s, e) <= 8) {
+        if (distanceToSegment(point, s, e) <= 8) {
           return { vector, kind: "body", start, end };
         }
       }
@@ -2017,55 +812,17 @@
           const vector = state.vectors.find(v => v.id === drag.vectorId);
           if (!vector) return;
           const world = screenToWorld(p.x, p.y);
-          const vehicleVector = getVehicleVector();
-          const vehicleEnd = getVehicleEnd(vehicleVector);
           if (drag.kind === "origin") {
-            if (isVehicleVector(vector)) {
-              vector.x = 0;
-              vector.y = 0;
-              vector.length = 1;
-              vector.angle = Math.atan2(world.y, world.x);
-            } else if (isSteerVector(vector)) {
-              vector.x = vehicleEnd.x;
-              vector.y = vehicleEnd.y;
-              vector.length = 0.25;
-              vector.angle = Math.atan2(world.y - vehicleEnd.y, world.x - vehicleEnd.x);
-            } else {
-              vector.x = world.x;
-              vector.y = world.y;
-            }
+            vector.x = world.x;
+            vector.y = world.y;
           } else if (drag.kind === "end" || drag.kind === "placing") {
-            if (isVehicleVector(vector)) {
-              vector.x = 0;
-              vector.y = 0;
-              vector.length = 1;
-              vector.angle = Math.atan2(world.y, world.x);
-            } else if (isSteerVector(vector)) {
-              vector.x = vehicleEnd.x;
-              vector.y = vehicleEnd.y;
-              vector.length = 0.25;
-              vector.angle = Math.atan2(world.y - vehicleEnd.y, world.x - vehicleEnd.x);
-            } else {
-              const dx = world.x - vector.x;
-              const dy = world.y - vector.y;
-              vector.length = Math.max(0.01, Math.hypot(dx, dy));
-              vector.angle = Math.atan2(dy, dx);
-            }
+            const dx = world.x - vector.x;
+            const dy = world.y - vector.y;
+            vector.length = Math.max(0.01, Math.hypot(dx, dy));
+            vector.angle = Math.atan2(dy, dx);
           } else if (drag.kind === "body") {
-            if (isVehicleVector(vector)) {
-              vector.x = 0;
-              vector.y = 0;
-              vector.length = 1;
-              vector.angle = Math.atan2(world.y, world.x);
-            } else if (isSteerVector(vector)) {
-              vector.x = vehicleEnd.x;
-              vector.y = vehicleEnd.y;
-              vector.length = 0.25;
-              vector.angle = Math.atan2(world.y - vehicleEnd.y, world.x - vehicleEnd.x);
-            } else {
-              vector.x = world.x - drag.grabOffset.x;
-              vector.y = world.y - drag.grabOffset.y;
-            }
+            vector.x = world.x - drag.grabOffset.x;
+            vector.y = world.y - drag.grabOffset.y;
           }
           dependentListDirty = true;
         }
@@ -2134,13 +891,8 @@
       if (!drag) return;
       if (drag.type === "vector") {
         const vector = state.vectors.find(v => v.id === drag.vectorId);
-        if (vector && isSteerVector(vector)) {
-          vector.length = 0.25;
-        } else if (vector && vector.length < 0.02) {
+        if (vector && vector.length < 0.02) {
           vector.length = 0.02;
-        }
-        if (vector && isVehicleVector(vector)) {
-          recalculateVehicleSolution();
         }
       }
       drag = null;
@@ -2194,14 +946,10 @@
     resetBtn.addEventListener("click", () => {
       localStorage.removeItem(STORAGE_KEY);
       Object.assign(state, createDefaultState());
-      initialVehicleSequenceFitPending = true;
       mode = "select";
       addVectorBtn.classList.remove("active");
       addVectorBtn.textContent = "Add vector";
-      syncButtons();
       dependentListDirty = true;
-      syncInputs();
-      recalculateVehicleSolution({ persist: false, render: false });
       fitView();
       saveState();
       scheduleRender();
@@ -2235,76 +983,6 @@
       scheduleRender();
     });
 
-    toggleVehicleBtn.addEventListener("click", () => {
-      state.ui.vehicle = !state.ui.vehicle;
-      toggleVehicleBtn.classList.toggle("active", state.ui.vehicle);
-      toggleVehicleBtn.textContent = state.ui.vehicle ? "Vehicle on" : "Vehicle off";
-      saveState();
-      scheduleRender();
-    });
-
-    function syncInputs() {
-      radiusInput.value = state.vehicle.radius;
-      headingChangeInput.value = state.vehicle.headingChange;
-      headingChangeInput.step = String(getHeadingChangeStep());
-    }
-
-    function recalculateVehicleSolution(options = {}) {
-      const persist = options.persist !== false;
-      const render = options.render !== false;
-      const vehicleVector = getVehicleVector();
-      if (!vehicleVector) {
-        state.vehicleCopies = [];
-        state.vehicle.finalPose = null;
-        return null;
-      }
-      const result = solveVehicleSlForBisectorAlignment(vehicleVector, {
-        geometry: state.vehicle,
-        initialSl: Number.isFinite(Number(state.vehicle.sl)) ? Number(state.vehicle.sl) : 0.01
-      });
-      if (Number.isFinite(result.sl)) {
-        state.vehicle.sl = result.sl;
-      }
-      if (Number.isFinite(result.headingChange)) {
-        state.vehicle.headingChange = result.headingChange;
-      }
-      const sweepCopies = buildVehicleCopies(vehicleVector, null, result?.curveLength);
-      state.vehicle.finalPose = resolveFinalVehiclePose(
-        vehicleVector,
-        state.vehicle,
-        result?.evaluation?.endPose || null,
-        sweepCopies
-      );
-      state.vehicleCopies = buildVehicleCopies(vehicleVector, state.vehicle.finalPose, result?.curveLength);
-      dependentListDirty = true;
-      syncInputs();
-      if (persist) saveState();
-      if (render) scheduleRender();
-      return result;
-    }
-
-    function syncButtons() {
-      toggleGuidesBtn.classList.toggle("active", state.ui.guides);
-      toggleGuidesBtn.textContent = state.ui.guides ? "Guides on" : "Guides off";
-      toggleVehicleBtn.classList.toggle("active", state.ui.vehicle);
-      toggleVehicleBtn.textContent = state.ui.vehicle ? "Vehicle on" : "Vehicle off";
-    }
-
-    radiusInput.addEventListener("input", () => {
-      const value = Number(radiusInput.value);
-      state.vehicle.radius = clamp(value || 0, -100, 100);
-      if (Math.abs(state.vehicle.radius) < 0.01) {
-        state.vehicle.radius = state.vehicle.radius < 0 ? -0.01 : 0.01;
-      }
-      syncInputs();
-      recalculateVehicleSolution();
-    });
-    headingChangeInput.addEventListener("input", () => {
-      state.vehicle.headingChange = clamp(snapHeadingChange(Number(headingChangeInput.value) || 0), 0, 100);
-      syncInputs();
-      recalculateVehicleSolution();
-    });
-
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         mode = "select";
@@ -2314,13 +992,9 @@
         scheduleRender();
       }
       if ((event.key === "Delete" || event.key === "Backspace") && state.selectedId) {
-        const selected = state.vectors.find(v => v.id === state.selectedId) || null;
         state.vectors = state.vectors.filter(v => v.id !== state.selectedId);
         state.selectedId = null;
         dependentListDirty = true;
-        if (selected && isVehicleVector(selected)) {
-          recalculateVehicleSolution();
-        }
         saveState();
         scheduleRender();
       }
@@ -2347,31 +1021,6 @@
       const rect = canvas.getBoundingClientRect();
       const xs = [0];
       const ys = [0];
-      const finalPose = state.vehicle.finalPose || null;
-      if (finalPose) {
-        const finalFront = {
-          x: (Number(finalPose.x) || 0) + Math.cos(Number(finalPose.angle) || 0),
-          y: (Number(finalPose.y) || 0) + Math.sin(Number(finalPose.angle) || 0)
-        };
-        xs.push(Number(finalPose.x) || 0, finalFront.x);
-        ys.push(Number(finalPose.y) || 0, finalFront.y);
-      }
-      const sweepCopies = state.vehicleCopies.length ? state.vehicleCopies : buildVehicleCopies();
-      for (const copy of sweepCopies) {
-        const rear = { x: Number(copy.x) || 0, y: Number(copy.y) || 0 };
-        const bodyAngle = Number(copy.angle) || 0;
-        const theta = Number(copy.theta) || 0;
-        const front = {
-          x: rear.x + Math.cos(bodyAngle),
-          y: rear.y + Math.sin(bodyAngle)
-        };
-        const steerEnd = {
-          x: front.x + Math.cos(bodyAngle + theta) * 0.25,
-          y: front.y + Math.sin(bodyAngle + theta) * 0.25
-        };
-        xs.push(rear.x, front.x, steerEnd.x);
-        ys.push(rear.y, front.y, steerEnd.y);
-      }
       for (const vector of state.vectors) {
         const { start, end } = vectorEndpoints(vector);
         xs.push(start.x, end.x);
@@ -2392,45 +1041,6 @@
       state.view.offsetY = centerY * state.view.scale;
     }
 
-    function fitVehicleSequenceView() {
-      const rect = canvas.getBoundingClientRect();
-      const xs = [];
-      const ys = [];
-      const vehicleWidth = 1;
-      const steerLength = 0.25;
-      for (const copy of state.vehicleCopies) {
-        const rear = { x: Number(copy.x) || 0, y: Number(copy.y) || 0 };
-        const bodyAngle = Number(copy.angle) || 0;
-        const theta = Number(copy.theta) || 0;
-        const front = {
-          x: rear.x + Math.cos(bodyAngle) * vehicleWidth,
-          y: rear.y + Math.sin(bodyAngle) * vehicleWidth
-        };
-        const steerEnd = {
-          x: front.x + Math.cos(bodyAngle + theta) * steerLength,
-          y: front.y + Math.sin(bodyAngle + theta) * steerLength
-        };
-        xs.push(rear.x, front.x, steerEnd.x);
-        ys.push(rear.y, front.y, steerEnd.y);
-      }
-      if (!xs.length || !ys.length) {
-        return;
-      }
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      const rangeX = Math.max(0.01, maxX - minX);
-      const rangeY = Math.max(0.01, maxY - minY);
-      const scaleX = rect.width / rangeX;
-      const scaleY = rect.height / rangeY;
-      state.view.scale = clamp(Math.min(scaleX, scaleY) * 0.92, 40, 500);
-      const centerX = (minX + maxX) / 2;
-      const centerY = (minY + maxY) / 2;
-      state.view.offsetX = -centerX * state.view.scale;
-      state.view.offsetY = centerY * state.view.scale;
-    }
-
     function clamp(value, min, max) {
       return Math.min(max, Math.max(min, value));
     }
@@ -2444,9 +1054,8 @@
         return;
       }
       initialized = true;
-      syncInputs();
-      syncButtons();
-      recalculateVehicleSolution({ persist: false, render: false });
+      toggleGuidesBtn.classList.toggle("active", state.ui.guides);
+      toggleGuidesBtn.textContent = state.ui.guides ? "Guides on" : "Guides off";
       fitView();
       setupCanvas();
       saveState();
