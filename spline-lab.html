@@ -964,7 +964,7 @@
         };
       }
       const turnAngle = curveLength / radius;
-      const center = { x: 0, y: radius };
+      const center = getVehicleCorPoint(geometry);
       const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
       const bisectorAngle = startAngle + turnAngle / 2;
       const bisectorDir = {
@@ -981,6 +981,30 @@
         bisectorAngle,
         bisectorOrigin: center,
         bisectorDir
+      };
+    }
+
+    function getVehicleCorPoint(geometry = state.vehicle) {
+      const radius = Number(geometry?.radius) || 0;
+      return { x: 0, y: radius };
+    }
+
+    function getVehicleBisectorContactSolution(vehicleVector = getVehicleVector(), geometry = state.vehicle) {
+      const activeVehicle = getActiveVehicle();
+      if (!vehicleVector || !activeVehicle) return null;
+      const solved = solveVehicleSlForBisectorAlignment(Number(activeVehicle.sl) || 0.01, vehicleVector, geometry);
+      if (!solved?.success || !solved.evaluation?.endPose) return null;
+      const coordinate = {
+        x: Number(solved.evaluation.endPose.x) || 0,
+        y: Number(solved.evaluation.endPose.y) || 0
+      };
+      return {
+        coordinate,
+        svTravelDistance: Number(solved.curveLength) || 0,
+        cor: getVehicleCorPoint(geometry),
+        sl: Number(solved.sl) || 0,
+        headingChange: Number(solved.headingChange) || 0,
+        success: true
       };
     }
 
@@ -2313,6 +2337,7 @@
       const activeVehicle = getActiveVehicle();
       const rp = activeVehicle?.Rp || null;
       const sv = getVehicleSv(activeVehicle);
+      const bisectorContact = getVehicleBisectorContactSolution();
       const entries = [{
         label: "Sl",
         value: Number.isFinite(Number(activeVehicle?.sl)) ? Number(activeVehicle.sl).toFixed(3) : "NaN",
@@ -2329,6 +2354,12 @@
           ? `X: ${formatFixed10(sv.X)}, Y: ${formatFixed10(sv.Y)}, Psi: ${formatFixed10(sv.Psi)}, L: ${formatFixed10(sv.length)}`
           : "NaN",
         note: "Derived steer coordinate from Rp and Sp."
+      }, {
+        label: "Bisector",
+        value: bisectorContact
+          ? `X: ${formatFixed10(bisectorContact.coordinate.x)}, Y: ${formatFixed10(bisectorContact.coordinate.y)}, Sv: ${formatFixed10(bisectorContact.svTravelDistance)}`
+          : "NaN",
+        note: "Vehicle coordinate and Sv travel distance when Rp is on the bisector and perpendicular to it."
       }];
       for (const entry of entries) {
         const control = document.createElement("div");
