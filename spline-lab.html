@@ -349,6 +349,23 @@
         </section>
 
         <section class="panel">
+          <div class="panel-title">Simple arc</div>
+          <div class="controls">
+            <div class="control">
+              <label for="arcRadius">Radius</label>
+              <input id="arcRadius" type="number" min="-100" max="100" step="0.1" value="1" />
+            </div>
+            <div class="control">
+              <label for="arcAngle">Arc Length</label>
+              <input id="arcAngle" type="number" min="0" max="100" step="0.08726646259971647" value="1.5707963267948966" />
+            </div>
+            <div class="control full">
+              <div class="sub" style="margin: 0; font-size: 12px;">The simple arc is drawn from the origin around Cor at (0, radius). Arc length is stored in radians.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
           <div class="panel-title">Dependent variables</div>
           <div id="dependentList" class="controls"></div>
         </section>
@@ -383,6 +400,8 @@
     const toggleVehicleBtn = document.getElementById("toggleVehicleBtn");
     const radiusInput = document.getElementById("radius");
     const headingChangeInput = document.getElementById("headingChange");
+    const arcRadiusInput = document.getElementById("arcRadius");
+    const arcAngleInput = document.getElementById("arcAngle");
     const dependentList = document.getElementById("dependentList");
     const jsonOutput = document.getElementById("jsonOutput");
     const modePill = document.getElementById("mode-pill");
@@ -445,7 +464,7 @@
 
     function createVehicle(overrides = {}) {
       const vehicle = {
-        Rp: overrides.Rp ? normalizeCoord(overrides.Rp, { label: "Rp", length: 1, color: "#7dd3fc" }) : createCoord(0, 0, 0, 1, "Rp", "#7dd3fc"),
+        Rp: overrides.Rp ? normalizeCoord(overrides.Rp, { label: "Rp", length: 1, color: "#7dd3fc" }) : createCoord(1, 1, 0, 1, "Rp", "#7dd3fc"),
         Sp: overrides.Sp ? normalizeCoord(overrides.Sp, { label: "Sp", length: 0.25, color: "#fbbf24" }) : createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24"),
         sl: Number.isFinite(Number(overrides.sl)) ? Number(overrides.sl) : 0.01
       };
@@ -470,12 +489,21 @@
       return vehicle;
     }
 
+    function createAnchorVehicle(sl = 0.01) {
+      return createVehicle({
+        Rp: createCoord(1, 1, 0, 1, "Rp", "#7dd3fc"),
+        Sp: createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24"),
+        sl
+      });
+    }
+
     function createDefaultState() {
       return {
         view: { scale: 150, offsetX: 0, offsetY: 0 },
         radius: 4,
         ui: { guides: true, vehicle: false },
-        Vehicles: [createVehicle()],
+        arc: { radius: 1, angle: Math.PI / 2 },
+        Vehicles: [createAnchorVehicle()],
         vehicleCopies: [],
         selectedId: null,
         vectors: []
@@ -495,7 +523,7 @@
           ? parsedVehicles.map(normalizeVehicle)
           : defaultState.Vehicles.map(normalizeVehicle);
         if (normalizedVehicles[0]) {
-          normalizedVehicles[0] = createVehicle();
+          normalizedVehicles[0] = createAnchorVehicle(normalizedVehicles[0].sl);
         }
         return {
           ...defaultState,
@@ -507,6 +535,10 @@
               : defaultState.radius),
           view: { ...defaultState.view, ...(parsed.view || {}) },
           ui: { ...defaultState.ui, ...(parsed.ui || {}), vehicle: false },
+          arc: {
+            ...defaultState.arc,
+            ...(parsed.arc || {})
+          },
           Vehicles: normalizedVehicles,
           vehicleCopies: [],
           vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : defaultState.vectors),
@@ -562,6 +594,18 @@
         cleaned.push(normalized);
       }
       return cleaned;
+    }
+
+    function createAnchorVector(vector = null) {
+      return {
+        id: vector?.id || randomId(),
+        label: vector?.label || "Vector 1",
+        x: 0,
+        y: 0,
+        angle: 0,
+        length: Number.isFinite(Number(vector?.length)) ? Number(vector.length) : 1.2,
+        color: vector?.color || COLORS[0]
+      };
     }
 
     function isSteerVector(vector) {
@@ -1430,16 +1474,28 @@
 
     function saveState() {
       enforceAnchors();
+      enforceVectorAnchor();
       syncVehicleShadows();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializableState()));
     }
 
     function getActiveVehicle() {
-      return state.Vehicles[0] || null;
+      return enforceAnchors();
     }
 
     function getVehicleVector() {
-      return getActiveVehicle()?.Rp || null;
+      const activeVehicle = getActiveVehicle();
+      const rp = activeVehicle?.Rp || null;
+      if (!rp) {
+        return createCoord(1, 1, 0, 1, "Rp", "#7dd3fc");
+      }
+      const x = Number(rp.X) || 0;
+      const y = Number(rp.Y) || 0;
+      const psi = Number(rp.Psi) || 0;
+      if (x === 0 && y === 0 && psi === 0) {
+        return createCoord(1, 1, 0, 1, "Rp", "#7dd3fc");
+      }
+      return rp;
     }
 
     function getVehicleGeometry() {
@@ -1480,7 +1536,7 @@
 
     function syncVehicleShadows() {
       const activeVehicle = getActiveVehicle();
-      const anchor = createVehicle({ sl: Number(activeVehicle?.sl) || 0.01 });
+      const anchor = createAnchorVehicle(Number(activeVehicle?.sl) || 0.01);
       const shadows = state.vehicleCopies.map((copy, index) => createVehicle({
         Rp: createCoord(copy.x, copy.y, copy.angle, 1, `Rp ${index + 1}`, "#7dd3fc"),
         Sp: createCoord(0, 0, copy.theta, 0.25, "Sp", "#fbbf24"),
@@ -1490,7 +1546,36 @@
     }
 
     function enforceAnchors() {
-      return;
+      let activeVehicle = state.Vehicles[0] || null;
+      if (!activeVehicle) {
+        activeVehicle = createAnchorVehicle();
+        state.Vehicles[0] = activeVehicle;
+      }
+      if (!activeVehicle.Rp) {
+        activeVehicle.Rp = createCoord(1, 1, 0, 1, "Rp", "#7dd3fc");
+      }
+      activeVehicle.Rp.X = 1;
+      activeVehicle.Rp.Y = 1;
+      activeVehicle.Rp.Psi = 0;
+      activeVehicle.Rp.length = 1;
+      activeVehicle.Rp.label = "Rp";
+      activeVehicle.Rp.color = "#7dd3fc";
+      if (!activeVehicle.Sp) {
+        activeVehicle.Sp = createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24");
+      }
+      activeVehicle.Sp.X = 0;
+      activeVehicle.Sp.Y = 0;
+      activeVehicle.Sp.Psi = Number(activeVehicle.Sp.Psi) || 0;
+      activeVehicle.Sp.length = 0.25;
+      activeVehicle.Sp.label = "Sp";
+      activeVehicle.Sp.color = "#fbbf24";
+      return activeVehicle;
+    }
+
+    function enforceVectorAnchor() {
+      if (!state.vectors.length) return null;
+      state.vectors[0] = createAnchorVector(state.vectors[0]);
+      return state.vectors[0];
     }
 
     function serializableState() {
@@ -1675,6 +1760,198 @@
       ctx.fill();
     }
 
+    function drawVehiclePerpendicularLine(origin, bodyAngle, alpha = 1, width = 2) {
+      const rect = canvas.getBoundingClientRect();
+      const length = (Math.hypot(rect.width, rect.height) / Math.max(1, state.view.scale)) + 1;
+      const end = {
+        x: origin.x - Math.sin(bodyAngle) * length,
+        y: origin.y + Math.cos(bodyAngle) * length
+      };
+      const originS = worldToScreen(origin.x, origin.y);
+      const endS = worldToScreen(end.x, end.y);
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = `rgba(125,211,252,${Math.min(1, 0.25 * alpha)})`;
+      ctx.lineWidth = Math.max(1.5, width);
+      ctx.beginPath();
+      ctx.moveTo(originS.x, originS.y);
+      ctx.lineTo(endS.x, endS.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawSteerPerpendicularLine(origin, steerAngle, alpha = 1, width = 2) {
+      const rect = canvas.getBoundingClientRect();
+      const length = (Math.hypot(rect.width, rect.height) / Math.max(1, state.view.scale)) + 1;
+      const end = {
+        x: origin.x - Math.sin(steerAngle) * length,
+        y: origin.y + Math.cos(steerAngle) * length
+      };
+      const originS = worldToScreen(origin.x, origin.y);
+      const endS = worldToScreen(end.x, end.y);
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = `rgba(251,191,36,${Math.min(1, 0.25 * alpha)})`;
+      ctx.lineWidth = Math.max(1.5, width);
+      ctx.beginPath();
+      ctx.moveTo(originS.x, originS.y);
+      ctx.lineTo(endS.x, endS.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function getVehiclePerpendicularIntersection(rear, bodyAngle, front, steerAngle) {
+      const blueOrigin = rear;
+      const blueDirection = {
+        x: -Math.sin(bodyAngle),
+        y: Math.cos(bodyAngle)
+      };
+      const yellowOrigin = front;
+      const yellowDirection = {
+        x: -Math.sin(steerAngle),
+        y: Math.cos(steerAngle)
+      };
+      return intersectLines(blueOrigin, blueDirection, yellowOrigin, yellowDirection);
+    }
+
+    function drawVehicleIntersectionPoint(point, alpha = 1) {
+      if (!point) return;
+      const p = worldToScreen(point.x, point.y);
+      ctx.save();
+      ctx.fillStyle = `rgba(125,211,252,${Math.min(1, 0.75 * alpha)})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function getSimpleArcGeometry() {
+      const radius = Number(state.arc?.radius) || 1;
+      const angle = Number(state.arc?.angle) || (Math.PI / 4);
+      const center = { x: 0, y: radius };
+      const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
+      return {
+        radius,
+        angle,
+        center,
+        startAngle,
+        endAngle: startAngle + angle,
+        valid: Number.isFinite(radius) && Number.isFinite(angle) && angle !== 0
+      };
+    }
+
+    function sampleSimpleArcPoints(arc = getSimpleArcGeometry(), sampleCount = Math.max(24, Math.ceil(Math.abs(Number(arc?.angle) || 0) * 48))) {
+      if (!arc?.valid) return [];
+      const points = [];
+      const radius = Math.abs(Number(arc.radius) || 0);
+      const count = Math.max(2, sampleCount);
+      for (let i = 0; i <= count; i += 1) {
+        const t = count === 0 ? 0 : i / count;
+        const theta = arc.startAngle + arc.angle * t;
+        points.push({
+          x: arc.center.x + Math.cos(theta) * radius,
+          y: arc.center.y + Math.sin(theta) * radius
+        });
+      }
+      return points;
+    }
+
+    function getSimpleArcBisectorPoint(arc = getSimpleArcGeometry()) {
+      if (!arc?.valid) return null;
+      const bisectorAngle = arc.startAngle + arc.angle / 2;
+      const dir = {
+        x: Math.cos(bisectorAngle),
+        y: Math.sin(bisectorAngle)
+      };
+      const origin = arc.center;
+      const candidates = [];
+      if (Math.abs(dir.y) > 1e-9) {
+        const tAxis = (0 - origin.y) / dir.y;
+        if (tAxis > 0) {
+          candidates.push({
+            t: tAxis,
+            point: {
+              x: origin.x + dir.x * tAxis,
+              y: 0
+            }
+          });
+        }
+      }
+      if (Math.abs(dir.x) > 1e-9) {
+        const verticalX = dir.x >= 0 ? 1 : -1;
+        const tVertical = (verticalX - origin.x) / dir.x;
+        if (tVertical > 0) {
+          candidates.push({
+            t: tVertical,
+            point: {
+              x: verticalX,
+              y: origin.y + dir.y * tVertical
+            }
+          });
+        }
+      }
+      if (!candidates.length) return null;
+      candidates.sort((a, b) => a.t - b.t);
+      return candidates[0].point;
+    }
+
+    function drawSimpleArc() {
+      const arc = getSimpleArcGeometry();
+      if (!arc.valid) return;
+
+      const arcPoints = sampleSimpleArcPoints(arc);
+      const bisectorEnd = getSimpleArcBisectorPoint(arc);
+
+      const originS = worldToScreen(0, 0);
+      const centerS = worldToScreen(arc.center.x, arc.center.y);
+
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = "rgba(126,240,191,0.25)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(originS.x, originS.y);
+      ctx.lineTo(centerS.x, centerS.y);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let i = 0; i < arcPoints.length; i += 1) {
+        const p = worldToScreen(arcPoints[i].x, arcPoints[i].y);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      ctx.beginPath();
+      ctx.arc(centerS.x, centerS.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (bisectorEnd) {
+        const bisectorEndS = worldToScreen(bisectorEnd.x, bisectorEnd.y);
+        ctx.save();
+        ctx.setLineDash([6, 6]);
+        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(centerS.x, centerS.y);
+        ctx.lineTo(bisectorEndS.x, bisectorEndS.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const endS = worldToScreen(arcPoints[arcPoints.length - 1].x, arcPoints[arcPoints.length - 1].y);
+      ctx.fillStyle = "rgba(237,243,255,0.88)";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
+      ctx.fillText(`r = ${Math.abs(arc.radius).toFixed(2)}, θ = ${(arc.angle).toFixed(2)} rad`, endS.x + 10, endS.y - 8);
+      ctx.restore();
+    }
+
     function drawVehicleInstance(instance, options = {}) {
       const alpha = options.alpha ?? 1;
       const bodyWidth = options.bodyWidth ?? 3;
@@ -1709,9 +1986,17 @@
       ctx.strokeStyle = `rgba(251,191,36,${Math.min(1, 0.82 * alpha)})`;
       ctx.lineWidth = steerWidth;
       drawArrow(steerStartS, steerEndS, ctx.strokeStyle, ctx.strokeStyle, steerWidth);
+      const perpendicularIntersection = getVehiclePerpendicularIntersection(rear, bodyAngle, front, bodyAngle + theta);
+      if (perpendicularIntersection) {
+        drawSteerPerpendicularLine(front, bodyAngle + theta, alpha, steerWidth * 0.9);
+        drawVehiclePerpendicularLine(rear, bodyAngle, alpha, bodyWidth * 0.65);
+        drawVehicleIntersectionPoint(perpendicularIntersection, alpha);
+      }
 
-      drawNode(rearS.x, rearS.y, `rgba(125,211,252,${Math.min(1, 0.9 * alpha)})`, bodyLabel);
-      drawNode(frontS.x, frontS.y, `rgba(251,191,36,${Math.min(1, 0.9 * alpha)})`, steerLabel);
+      drawNode(rearS.x, rearS.y, `rgba(125,211,252,${Math.min(1, 0.9 * alpha)})`);
+      drawNode(frontS.x, frontS.y, `rgba(251,191,36,${Math.min(1, 0.9 * alpha)})`);
+      drawOffsetLabel(rearS.x, rearS.y, bodyLabel);
+      drawOffsetLabel(frontS.x, frontS.y, steerLabel);
 
       ctx.fillStyle = `rgba(237,243,255,${Math.min(1, 0.7 * alpha)})`;
       ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
@@ -1733,7 +2018,6 @@
     }
 
     function drawVehicle() {
-      if (!state.ui.vehicle) return;
       const activeVehicle = getActiveVehicle();
       const vehicleGeometry = getVehicleGeometry();
       const radius = Number(state.radius) || 0;
@@ -1826,13 +2110,26 @@
       ctx.moveTo(rearS.x, rearS.y);
       ctx.lineTo(frontS.x, frontS.y);
       ctx.stroke();
+      const steerAngle = bodyAngle + (Number(pose.theta) || getThetaValue());
+      const turnIntersection = getVehiclePerpendicularIntersection(rear, bodyAngle, front, steerAngle);
+      if (turnIntersection) {
+        drawVehiclePerpendicularLine(rear, bodyAngle, 1, 2.6);
+        drawSteerPerpendicularLine(front, steerAngle, 1, 2.2);
+        drawVehicleIntersectionPoint(turnIntersection, 1);
+      }
       const midWheelbase = { x: (rearS.x + frontS.x) / 2, y: (rearS.y + frontS.y) / 2 };
-      ctx.fillStyle = "rgba(125,211,252,0.95)";
-      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText("1", midWheelbase.x + 8, midWheelbase.y - 8);
 
-      drawNode(rearS.x, rearS.y, "#7dd3fc", "Rp 0");
-      drawNode(frontS.x, frontS.y, "#fbbf24", "Sv");
+      drawNode(rearS.x, rearS.y, "#7dd3fc");
+      drawNode(frontS.x, frontS.y, "#fbbf24");
+      drawOffsetLabel(rearS.x, rearS.y, "Rp 0");
+      drawOffsetLabel(frontS.x, frontS.y, "Sv", -12, -18);
+
+      const steerVectorEnd = {
+        x: front.x + Math.cos(steerAngle) * 0.25,
+        y: front.y + Math.sin(steerAngle) * 0.25
+      };
+      const steerVectorEndS = worldToScreen(steerVectorEnd.x, steerVectorEnd.y);
+      drawArrow(frontS, steerVectorEndS, "rgba(251,191,36,0.92)", "rgba(251,191,36,0.92)", 2.5);
 
       const label = `θ = ${formatAngle(Number(pose.theta) || getThetaValue())}`;
       ctx.fillStyle = "rgba(237,243,255,0.88)";
@@ -1905,9 +2202,17 @@
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fill();
+      if (!label) return;
       ctx.fillStyle = "rgba(237,243,255,0.9)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText(label, x + 8, y - 8);
+    }
+
+    function drawOffsetLabel(x, y, label, offsetX = 12, offsetY = -18) {
+      if (!label) return;
+      ctx.fillStyle = "rgba(237,243,255,0.9)";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(label, x + offsetX, y + offsetY);
     }
 
     function drawVectors() {
@@ -1973,8 +2278,12 @@
       if (state.ui.vehicle) {
         drawVehiclePathTrace();
         drawVehicleCopies();
+      }
+      const renderMainVehicle = false;
+      if (renderMainVehicle) {
         drawVehicle();
       }
+      drawSimpleArc();
       drawVectors();
 
       updateMetrics();
@@ -2356,6 +2665,8 @@
       radiusInput.value = state.radius;
       headingChangeInput.value = Number(activeVehicle?.headingChange) || 0;
       headingChangeInput.step = String(getHeadingChangeStep());
+      arcRadiusInput.value = Number(state.arc?.radius) || 1;
+      arcAngleInput.value = Number(state.arc?.angle) || (Math.PI / 4);
     }
 
     function recalculateVehicleSolution(options = {}) {
@@ -2419,6 +2730,23 @@
       syncInputs();
       recalculateVehicleSolution();
     });
+    arcRadiusInput.addEventListener("input", () => {
+      const value = Number(arcRadiusInput.value);
+      state.arc.radius = clamp(value || 0, -100, 100);
+      if (Math.abs(state.arc.radius) < 0.01) {
+        state.arc.radius = state.arc.radius < 0 ? -0.01 : 0.01;
+      }
+      syncInputs();
+      saveState();
+      scheduleRender();
+    });
+    arcAngleInput.addEventListener("input", () => {
+      const value = Number(arcAngleInput.value);
+      state.arc.angle = Math.max(0.01, value || 0);
+      syncInputs();
+      saveState();
+      scheduleRender();
+    });
 
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -2459,6 +2787,12 @@
       const rect = canvas.getBoundingClientRect();
       const xs = [0];
       const ys = [0];
+      const arc = getSimpleArcGeometry();
+      if (arc.valid) {
+        const arcPoints = sampleSimpleArcPoints(arc, 48);
+        xs.push(0, arc.center.x, ...arcPoints.map(point => point.x));
+        ys.push(0, arc.center.y, ...arcPoints.map(point => point.y));
+      }
       const finalPose = getActiveVehicle()?.finalPose || null;
       if (finalPose) {
         const finalFront = {
@@ -2556,6 +2890,8 @@
         return;
       }
       initialized = true;
+      state.Vehicles[0] = createAnchorVehicle(Number(state.Vehicles[0]?.sl) || 0.01);
+      enforceVectorAnchor();
       state.ui.vehicle = false;
       syncInputs();
       syncButtons();
