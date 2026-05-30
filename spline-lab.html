@@ -69,13 +69,6 @@
       text-transform: uppercase;
       letter-spacing: 0.12em;
     }
-    .sub {
-      margin: 10px 0 0;
-      max-width: 74ch;
-      color: var(--muted);
-      line-height: 1.55;
-      font-size: 14px;
-    }
     .status {
       display: flex;
       flex-wrap: wrap;
@@ -286,19 +279,12 @@
   <div class="app">
     <header class="topbar">
       <div class="titleblock">
-        <div class="eyebrow">Interactive 2D vector board</div>
         <h1>Spline-Lab</h1>
-        <p class="sub">
-          A first-pass sketchpad for the vehicle path-motion geometry. Pan and zoom the board,
-          add free vectors, drag handles, and use the vehicle scaffold to reason in normalized
-          coordinates where the wheelbase is fixed at 1 and the motion is controlled by the vehicle geometry inputs.
-        </p>
       </div>
       <div class="status">
         <div class="pill" id="mode-pill">Mode: select</div>
         <div class="pill" id="geometry-pill">Geometry: normalized</div>
         <div class="pill" id="selected-pill">Selected: none</div>
-        <div class="pill" id="hint-pill">Wheel drag: pan · Shift+wheel: zoom</div>
       </div>
     </header>
 
@@ -316,40 +302,13 @@
           <canvas id="stage"></canvas>
         </div>
         <div class="hint">
-          <div>Drag a vector handle to edit it. Drag empty space to pan. Double-click empty space to create a vector.</div>
           <div id="coordsReadout">x: 0.00, y: 0.00</div>
-          <div id="renderStatus" class="sub" style="margin-top: 8px; font-size: 12px;">Render: pending</div>
+          <div id="renderStatus" class="sub" style="margin-top: 8px; font-size: 12px;"></div>
         </div>
       </section>
 
       <aside class="side">
-        <div class="side-head">
-          <h2>Inspector</h2>
-          <p>
-            The left side is the drawing surface. This panel edits the vehicle scaffold and any selected free vector.
-            The vehicle overlay is drawn in normalized units with wheelbase fixed at 1.
-          </p>
-        </div>
-
         <section class="panel">
-          <div class="panel-title">Vehicle geometry</div>
-          <div class="controls">
-            <div class="control">
-              <label for="radius">Radius</label>
-              <input id="radius" type="number" min="-100" max="100" step="0.1" value="4" />
-            </div>
-            <div class="control">
-              <label for="headingChange">Heading Change</label>
-              <input id="headingChange" type="number" min="0" max="100" step="0.08726646259971647" value="1.5707963267948966" />
-            </div>
-            <div class="control full">
-              <div class="sub" style="margin: 0; font-size: 12px;">Radius is signed. Positive values turn left, negative values turn right. Heading change is the arc angle traveled in radians. Curve length is derived internally as radius times heading change. Sl is solved from the geometry and shown in the dependent variables pane.</div>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Simple arc</div>
           <div class="controls">
             <div class="control">
               <label for="arcRadius">Radius</label>
@@ -359,31 +318,13 @@
               <label for="arcAngle">Arc Length</label>
               <input id="arcAngle" type="number" min="0" max="100" step="0.08726646259971647" value="1.5707963267948966" />
             </div>
-            <div class="control full">
-              <div class="sub" style="margin: 0; font-size: 12px;">The simple arc is drawn from the origin around Cor at (0, radius). Arc length is stored in radians.</div>
-            </div>
           </div>
         </section>
 
         <section class="panel">
-          <div class="panel-title">Dependent variables</div>
           <div id="dependentList" class="controls"></div>
         </section>
 
-        <section class="panel">
-          <div class="panel-title">Scene stats</div>
-          <div class="stats">
-            <div class="stat">
-              <div class="k">Selection</div>
-              <div class="v" id="selectionValue">None</div>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Export snapshot</div>
-          <textarea id="jsonOutput" class="json" spellcheck="false" readonly></textarea>
-        </section>
       </aside>
     </main>
   </div>
@@ -398,8 +339,6 @@
     const fitBtn = document.getElementById("fitBtn");
     const toggleGuidesBtn = document.getElementById("toggleGuidesBtn");
     const toggleVehicleBtn = document.getElementById("toggleVehicleBtn");
-    const radiusInput = document.getElementById("radius");
-    const headingChangeInput = document.getElementById("headingChange");
     const arcRadiusInput = document.getElementById("arcRadius");
     const arcAngleInput = document.getElementById("arcAngle");
     const dependentList = document.getElementById("dependentList");
@@ -1888,32 +1827,35 @@
         y: Math.sin(bisectorAngle)
       };
       const origin = arc.center;
+      const radiusLineX = Number(arc.radius) || 0;
       const candidates = [];
+
       if (Math.abs(dir.y) > 1e-9) {
-        const tAxis = (0 - origin.y) / dir.y;
-        if (tAxis > 0) {
+        const tY0 = (0 - origin.y) / dir.y;
+        if (tY0 > 0) {
           candidates.push({
-            t: tAxis,
+            t: tY0,
             point: {
-              x: origin.x + dir.x * tAxis,
+              x: origin.x + dir.x * tY0,
               y: 0
             }
           });
         }
       }
+
       if (Math.abs(dir.x) > 1e-9) {
-        const verticalX = dir.x >= 0 ? 1 : -1;
-        const tVertical = (verticalX - origin.x) / dir.x;
-        if (tVertical > 0) {
+        const tXRadius = (radiusLineX - origin.x) / dir.x;
+        if (tXRadius > 0) {
           candidates.push({
-            t: tVertical,
+            t: tXRadius,
             point: {
-              x: verticalX,
-              y: origin.y + dir.y * tVertical
+              x: radiusLineX,
+              y: origin.y + dir.y * tXRadius
             }
           });
         }
       }
+
       if (!candidates.length) return null;
       candidates.sort((a, b) => a.t - b.t);
       return candidates[0].point;
@@ -2101,8 +2043,8 @@
         ctx.beginPath();
         ctx.moveTo(centerS.x, centerS.y);
         ctx.lineTo(
-          centerS.x + turnGeometry.bisectorDir.x * absRadius * 1.85 * state.view.scale,
-          centerS.y - turnGeometry.bisectorDir.y * absRadius * 1.85 * state.view.scale
+          centerS.x + turnGeometry.bisectorDir.x * absRadius * state.view.scale,
+          centerS.y - turnGeometry.bisectorDir.y * absRadius * state.view.scale
         );
         ctx.stroke();
 
@@ -2318,7 +2260,6 @@
     function updateMetrics() {
       const selected = state.vectors.find(v => v.id === state.selectedId) || null;
       selectedPill.textContent = `Selected: ${selected ? (selected.label || "vector") : "none"}`;
-      selectionValue.textContent = selected ? (selected.label || "Vector") : "None";
 
       modePill.textContent = `Mode: ${mode}`;
       geometryPill.textContent = "Geometry: normalized";
@@ -2328,7 +2269,9 @@
     }
 
     function updateJson() {
-      jsonOutput.value = JSON.stringify(serializableState(), null, 2);
+      if (jsonOutput) {
+        jsonOutput.value = JSON.stringify(serializableState(), null, 2);
+      }
     }
 
     function updateDependentList() {
@@ -2664,8 +2607,10 @@
           exportBtn.textContent = "Copy JSON";
         }, 1000);
       } catch {
-        jsonOutput.focus();
-        jsonOutput.select();
+        if (jsonOutput) {
+          jsonOutput.focus();
+          jsonOutput.select();
+        }
       }
     });
 
@@ -2693,9 +2638,6 @@
 
     function syncInputs() {
       const activeVehicle = getActiveVehicle();
-      radiusInput.value = state.radius;
-      headingChangeInput.value = Number(activeVehicle?.headingChange) || 0;
-      headingChangeInput.step = String(getHeadingChangeStep());
       arcRadiusInput.value = Number(state.arc?.radius) || 1;
       arcAngleInput.value = Number(state.arc?.angle) || (Math.PI / 4);
     }
@@ -2744,23 +2686,6 @@
       toggleVehicleBtn.textContent = state.ui.vehicle ? "Vehicle on" : "Vehicle off";
     }
 
-    radiusInput.addEventListener("input", () => {
-      const value = Number(radiusInput.value);
-      state.radius = clamp(value || 0, -100, 100);
-      if (Math.abs(state.radius) < 0.01) {
-        state.radius = state.radius < 0 ? -0.01 : 0.01;
-      }
-      syncInputs();
-      recalculateVehicleSolution();
-    });
-    headingChangeInput.addEventListener("input", () => {
-      const activeVehicle = getActiveVehicle();
-      if (activeVehicle) {
-        activeVehicle.headingChange = clamp(snapHeadingChange(Number(headingChangeInput.value) || 0), 0, 100);
-      }
-      syncInputs();
-      recalculateVehicleSolution();
-    });
     arcRadiusInput.addEventListener("input", () => {
       const value = Number(arcRadiusInput.value);
       state.arc.radius = clamp(value || 0, -100, 100);
