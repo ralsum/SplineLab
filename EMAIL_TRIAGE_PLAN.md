@@ -1,27 +1,26 @@
 # Email Triage Operating Spec
 
-Goal: process email in hourly batches, starting from the oldest unprocessed hour, then switch to a steady hourly run on the hour. Keep the Inbox and Junk emptied for processed mail by moving messages into archive folders.
+Goal: process email in hourly batches, starting from the oldest unprocessed hour, then switch to a steady hourly run on the hour. Keep the Inbox and Junk emptied by moving messages into archive folders immediately.
 
 ## Scope
 
 - Process mail from **Inbox** and **Junk**.
-- Skip any message already in a folder.
-- Skip any message already marked as read.
 - Do not delete mail.
 
 ## Core triage rule
 
 - If triage says a message is **important** or needs action, move it to the **Important** folder and leave it **unread**.
-- All other processed mail goes to the appropriate archive folder and is marked **read**.
-- If the destination folder is unclear or conflicting, move the message to **Undecided** temporarily.
+- If a message is uncategorized, move it to **Unknown** and mark it **read**.
+- All other processed mail goes to the matching archive folder and is marked **read**.
 
 ## Folder mapping
 
 Map mail into the existing folder tree shown in the mailbox image. Initial target folders:
 
+- Important
+- Unknown
 - Facebook
 - Finance
-- Important
 - Medical
 - Newsletter
 - Personal
@@ -30,13 +29,10 @@ Map mail into the existing folder tree shown in the mailbox image. Initial targe
 - Security
 - Shopping
 - Travel
-- Unknown
 - Work
-- Undecided
 
 Notes:
 - **Important** is a special destination for acted-upon mail and stays unread.
-- **Undecided** is the temporary conflict bucket.
 - Additional folders can be proposed later after a few runs.
 
 ## Triage guidance
@@ -45,7 +41,7 @@ Initial importance decision is conservative:
 
 - Mark as **Important** when the message clearly needs a human action or follow-up.
 - Otherwise archive normally into the best matching folder.
-- Use **Undecided** when two folders compete or the correct archive folder is not clear.
+- Use **Unknown** when the message cannot be categorized with confidence.
 
 ## Hourly processing behavior
 
@@ -75,5 +71,5 @@ Initial importance decision is conservative:
 
 ## Current caveats
 
-- The mailbox image shows yearly folders plus a 2026/01 sub-tree; the exact archive destinations for each category may need refinement after a few runs.
+- The mailbox image shows yearly folders plus a 2026/01 sub-tree; archive destinations should follow that tree.
 - If the archive rule and read/unread rule conflict for a message, the importance rule wins: Important stays unread, everything else is read.

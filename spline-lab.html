@@ -403,9 +403,9 @@
 
     function createVehicle(overrides = {}) {
       const vehicle = {
-        Rp: overrides.Rp ? normalizeCoord(overrides.Rp, { label: "Rp", length: 1, color: "#7dd3fc" }) : createCoord(1, 1, 0, 1, "Rp", "#7dd3fc"),
+        Rp: overrides.Rp ? normalizeCoord(overrides.Rp, { label: "Rp", length: 1, color: "#7dd3fc" }) : createCoord(0, 0, 0, 1, "Rp", "#7dd3fc"),
         Sp: overrides.Sp ? normalizeCoord(overrides.Sp, { label: "Sp", length: 0.25, color: "#fbbf24" }) : createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24"),
-        sl: Number.isFinite(Number(overrides.sl)) ? Number(overrides.sl) : 0.01
+        sl: Number.isFinite(Number(overrides.sl)) ? Number(overrides.sl) : Math.PI / 4
       };
       Object.defineProperty(vehicle, "headingChange", {
         enumerable: false,
@@ -428,9 +428,9 @@
       return vehicle;
     }
 
-    function createAnchorVehicle(sl = 0.01) {
+    function createAnchorVehicle(sl = Math.PI / 4) {
       return createVehicle({
-        Rp: createCoord(1, 1, 0, 1, "Rp", "#7dd3fc"),
+        Rp: createCoord(0, 0, 0, 1, "Rp", "#7dd3fc"),
         Sp: createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24"),
         sl
       });
@@ -533,18 +533,6 @@
         cleaned.push(normalized);
       }
       return cleaned;
-    }
-
-    function createAnchorVector(vector = null) {
-      return {
-        id: vector?.id || randomId(),
-        label: vector?.label || "Vector 1",
-        x: 0,
-        y: 0,
-        angle: 0,
-        length: Number.isFinite(Number(vector?.length)) ? Number(vector.length) : 1.2,
-        color: vector?.color || COLORS[0]
-      };
     }
 
     function isSteerVector(vector) {
@@ -931,7 +919,7 @@
     function getVehicleBisectorContactSolution(vehicleVector = getVehicleVector(), geometry = state.vehicle) {
       const activeVehicle = getActiveVehicle();
       if (!vehicleVector || !activeVehicle) return null;
-      const solved = solveVehicleSlForBisectorAlignment(Number(activeVehicle.sl) || 0.01, vehicleVector, geometry);
+      const solved = solveVehicleSlForBisectorAlignment(getSolverInitialSl(activeVehicle.sl), vehicleVector, geometry);
       if (!solved?.success || !solved.evaluation?.endPose) return null;
       const coordinate = {
         x: Number(solved.evaluation.endPose.x) || 0,
@@ -944,6 +932,45 @@
         sl: Number(solved.sl) || 0,
         headingChange: Number(solved.headingChange) || 0,
         success: true
+      };
+    }
+
+    function scoreVehicleBisectorAlignment(evaluation, geometry = state.vehicle) {
+      if (!evaluation || !evaluation.geometry?.valid) {
+        return {
+          score: NaN,
+          lineError: NaN,
+          normalizedLineError: NaN,
+          perpendicularError: NaN,
+          distanceScale: NaN
+        };
+      }
+      const lineError = Number(evaluation.rearDistance);
+      const bodyAlignment = Number(evaluation.bodyAlignment);
+      if (!Number.isFinite(lineError) || !Number.isFinite(bodyAlignment)) {
+        return {
+          score: NaN,
+          lineError,
+          normalizedLineError: NaN,
+          perpendicularError: NaN,
+          distanceScale: NaN
+        };
+      }
+      const perpendicularError = Math.asin(clamp(bodyAlignment, -1, 1));
+      const distanceScale = Math.max(
+        1,
+        Math.abs(Number(evaluation.geometry?.radius) || 0),
+        Math.abs(Number(evaluation.geometry?.curveLength) || 0),
+        Math.abs(Number(geometry?.radius) || 0),
+        Math.abs(getCurveLengthFromGeometry(geometry))
+      );
+      const normalizedLineError = lineError / distanceScale;
+      return {
+        score: normalizedLineError ** 2 + perpendicularError ** 2,
+        lineError,
+        normalizedLineError,
+        perpendicularError,
+        distanceScale
       };
     }
 
@@ -1071,7 +1098,8 @@
       const fallback = searchPositiveMinimum(
         (headingChange) => {
           const evaluation = evaluateVehicleBisectorAlignmentError(candidateSl, vehicleVector, { ...geometry, headingChange });
-          return Number.isFinite(evaluation.rearDistance) ? evaluation.rearDistance ** 2 : Infinity;
+          const alignmentScore = scoreVehicleBisectorAlignment(evaluation, geometry);
+          return Number.isFinite(alignmentScore.score) ? alignmentScore.score : Infinity;
         },
         startHeadingChange,
         maxSpan,
@@ -1143,14 +1171,17 @@
           score: NaN
         };
       }
-      const bodyAngleError = Math.asin(clamp(Number(evaluation.bodyAlignment) || 0, -1, 1));
-      const score = bodyAngleError ** 2;
+      const alignmentScore = scoreVehicleBisectorAlignment(evaluation, geometry);
+      const bodyAngleError = alignmentScore.perpendicularError;
+      const score = alignmentScore.score;
       return {
         ...evaluation,
         inner,
         headingChange: inner.headingChange,
         curveLength: inner.curveLength,
         bodyAngleError,
+        lineDistanceError: alignmentScore.lineError,
+        normalizedLineDistanceError: alignmentScore.normalizedLineError,
         score
       };
     }
@@ -1195,9 +1226,11 @@
 
     function searchPositiveMinimum(fn, center, maxSpan = 128, passes = 5, sampleCount = 21) {
       const clampSl = (value) => clamp(Number(value) || 0, 0, maxSpan);
-      let left = 0;
-      let right = Math.max(0, maxSpan);
-      let best = { x: clampSl(center), y: Infinity };
+      const seed = clampSl(center);
+      let span = Math.max(0.25, Math.abs(seed) * 0.5);
+      let left = clampSl(seed - span);
+      let right = clampSl(seed + span);
+      let best = { x: seed, y: Infinity };
       let evaluations = 0;
 
       const evaluate = (x) => {
@@ -1217,8 +1250,7 @@
         let localBestX = best.x;
         let localBestY = best.y;
         let localBestIndex = 0;
-        let previousX = left;
-        let previousY = evaluate(left);
+        evaluate(left);
 
         for (let i = 1; i < count; i += 1) {
           const t = i / (count - 1);
@@ -1229,13 +1261,12 @@
             localBestY = y;
             localBestIndex = i;
           }
-          previousX = x;
-          previousY = y;
         }
 
         const step = width / (count - 1);
-        left = clampSl(localBestX - step);
-        right = clampSl(localBestX + step);
+        span = Math.max(step * 2, Math.min(maxSpan, Math.max(0.25, width * 0.5)));
+        left = clampSl(localBestX - span);
+        right = clampSl(localBestX + span);
         if (Math.abs(right - left) <= 1e-6) {
           break;
         }
@@ -1373,7 +1404,7 @@
           sl: NaN,
           error: NaN,
           reason: "missing-vehicle-vector",
-          initialSl: Number.isFinite(Number(options.initialSl)) ? Number(options.initialSl) : 0.01,
+          initialSl: Number.isFinite(Number(options.initialSl)) ? Number(options.initialSl) : Math.PI / 4,
           initialSpan: Number.isFinite(Number(options.initialSpan)) ? Math.abs(Number(options.initialSpan)) : 0.5,
           maxSpan: Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128,
           geometry: options.geometry || { radius: 4, headingChange: 0 },
@@ -1385,7 +1416,7 @@
       const geometry = options.geometry || { radius: 4, headingChange: 0 };
       const startSl = Math.max(0, Number.isFinite(Number(options.initialSl))
         ? Number(options.initialSl)
-        : 0.01);
+        : Math.PI / 4);
       const maxSpan = Number.isFinite(Number(options.maxSpan)) ? Math.abs(Number(options.maxSpan)) : 128;
       const fn = (sl) => evaluateVehicleCombinedAlignment(sl, vehicleVector, geometry).score;
       const outerPasses = Number.isFinite(Number(options.passes)) ? Math.max(1, Number(options.passes)) : 5;
@@ -1450,13 +1481,13 @@
       const activeVehicle = getActiveVehicle();
       const rp = activeVehicle?.Rp || null;
       if (!rp) {
-        return createCoord(1, 1, 0, 1, "Rp", "#7dd3fc");
+        return createCoord(0, 0, 0, 1, "Rp", "#7dd3fc");
       }
       const x = Number(rp.X) || 0;
       const y = Number(rp.Y) || 0;
       const psi = Number(rp.Psi) || 0;
       if (x === 0 && y === 0 && psi === 0) {
-        return createCoord(1, 1, 0, 1, "Rp", "#7dd3fc");
+        return createCoord(0, 0, 0, 1, "Rp", "#7dd3fc");
       }
       return rp;
     }
@@ -1497,15 +1528,47 @@
       );
     }
 
+    function vehicleToPose(vehicle) {
+      const rp = vehicle?.Rp || null;
+      const sp = vehicle?.Sp || null;
+      if (!rp || !sp) return null;
+      return {
+        x: Number(rp.X) || 0,
+        y: Number(rp.Y) || 0,
+        angle: Number(rp.Psi) || 0,
+        theta: Number(sp.Psi) || 0,
+        radius: Number(state.radius) || 0,
+        curveLength: Number(vehicle?.finalPose?.curveLength) || 0
+      };
+    }
+
+    function sampleEvenlySpacedCopies(copies, count = 5) {
+      if (!Array.isArray(copies) || copies.length === 0) return [];
+      const target = Math.max(1, Math.min(count, copies.length));
+      if (target === copies.length) return copies.slice();
+      if (target === 1) return [copies[copies.length - 1]];
+      const sampled = [];
+      const lastIndex = copies.length - 1;
+      for (let i = 0; i < target; i += 1) {
+        const t = i / (target - 1);
+        const index = Math.round(lastIndex * t);
+        const copy = copies[index];
+        if (copy) sampled.push(copy);
+      }
+      return sampled;
+    }
+
     function syncVehicleShadows() {
       const activeVehicle = getActiveVehicle();
-      const anchor = createAnchorVehicle(Number(activeVehicle?.sl) || 0.01);
-      const shadows = state.vehicleCopies.map((copy, index) => createVehicle({
+      const anchor = createAnchorVehicle(getSolverInitialSl(activeVehicle?.sl));
+      const sampledCopies = sampleEvenlySpacedCopies(state.vehicleCopies, 5);
+      const shadows = sampledCopies.map((copy, index) => createVehicle({
         Rp: createCoord(copy.x, copy.y, copy.angle, 1, `Rp ${index + 1}`, "#7dd3fc"),
         Sp: createCoord(0, 0, copy.theta, 0.25, "Sp", "#fbbf24"),
-        sl: Number(activeVehicle?.sl) || 0.01
+        sl: getSolverInitialSl(activeVehicle?.sl)
       }));
       state.Vehicles = [anchor, ...shadows];
+      dependentListDirty = true;
     }
 
     function enforceAnchors() {
@@ -1515,10 +1578,10 @@
         state.Vehicles[0] = activeVehicle;
       }
       if (!activeVehicle.Rp) {
-        activeVehicle.Rp = createCoord(1, 1, 0, 1, "Rp", "#7dd3fc");
+        activeVehicle.Rp = createCoord(0, 0, 0, 1, "Rp", "#7dd3fc");
       }
-      activeVehicle.Rp.X = 1;
-      activeVehicle.Rp.Y = 1;
+      activeVehicle.Rp.X = 0;
+      activeVehicle.Rp.Y = 0;
       activeVehicle.Rp.Psi = 0;
       activeVehicle.Rp.length = 1;
       activeVehicle.Rp.label = "Rp";
@@ -1528,7 +1591,7 @@
       }
       activeVehicle.Sp.X = 0;
       activeVehicle.Sp.Y = 0;
-      activeVehicle.Sp.Psi = Number(activeVehicle.Sp.Psi) || 0;
+      activeVehicle.Sp.Psi = 0;
       activeVehicle.Sp.length = 0.25;
       activeVehicle.Sp.label = "Sp";
       activeVehicle.Sp.color = "#fbbf24";
@@ -1536,8 +1599,17 @@
     }
 
     function enforceVectorAnchor() {
-      if (!state.vectors.length) return null;
-      state.vectors[0] = createAnchorVector(state.vectors[0]);
+      const activeVehicle = getActiveVehicle();
+      if (!activeVehicle?.Rp) return null;
+      state.vectors[0] = activeVehicle.Rp;
+      if (!state.vectors[0].id) {
+        state.vectors[0].id = randomId();
+      }
+      state.vectors[0].label = "";
+      state.vectors[0].color = state.vectors[0].color || COLORS[0];
+      state.vectors[0].length = Number.isFinite(Number(state.vectors[0].length))
+        ? Number(state.vectors[0].length)
+        : 1.2;
       return state.vectors[0];
     }
 
@@ -2105,10 +2177,12 @@
     }
 
     function drawVehicleCopies() {
-      if (!state.vehicleCopies.length) return;
-      for (let i = 0; i < state.vehicleCopies.length; i += 1) {
-        const copy = state.vehicleCopies[i];
-        const alpha = 0.14 + (i / Math.max(1, state.vehicleCopies.length - 1)) * 0.42;
+      const sampledVehicles = state.Vehicles.slice(1).map(vehicleToPose).filter(Boolean);
+      const copies = sampledVehicles.length ? sampledVehicles : state.vehicleCopies;
+      if (!copies.length) return;
+      for (let i = 0; i < copies.length; i += 1) {
+        const copy = copies[i];
+        const alpha = 0.14 + (i / Math.max(1, copies.length - 1)) * 0.42;
         drawVehicleInstance(copy, {
           alpha,
           bodyWidth: 2.5,
@@ -2182,7 +2256,8 @@
     }
 
     function drawVectors() {
-      for (const vector of state.vectors) {
+      for (let index = 0; index < state.vectors.length; index += 1) {
+        const vector = state.vectors[index];
         const { start, end } = vectorEndpoints(vector);
         const s = worldToScreen(start.x, start.y);
         const e = worldToScreen(end.x, end.y);
@@ -2202,7 +2277,7 @@
         } else {
           drawArrow(s, e, selected ? "rgba(255,255,255,0.92)" : vector.color, vector.color, selected ? 4 : 3);
         }
-        drawNode(s.x, s.y, vector.color, vector.label?.trim() ? vector.label.trim()[0].toUpperCase() : "V");
+        drawNode(s.x, s.y, vector.color, index === 0 ? "" : (vector.label?.trim() ? vector.label.trim()[0].toUpperCase() : "V"));
         drawHandle(s.x, s.y, selected ? "#ffffff" : vector.color);
         if (!thetaVector) {
           drawHandle(e.x, e.y, selected ? "#ffffff" : vector.color);
@@ -2211,7 +2286,9 @@
         ctx.fillStyle = "rgba(237,243,255,0.88)";
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         const labelPoint = thetaVector ? thetaTip : e;
-        ctx.fillText(vector.label || "Vector", labelPoint.x + 8, labelPoint.y - 8);
+        if (index !== 0) {
+          ctx.fillText(vector.label || "Vector", labelPoint.x + 8, labelPoint.y - 8);
+        }
       }
     }
 
@@ -2243,9 +2320,9 @@
       drawAxes();
       if (state.ui.vehicle) {
         drawVehiclePathTrace();
-        drawVehicleCopies();
       }
-      const renderMainVehicle = false;
+      drawVehicleCopies();
+      const renderMainVehicle = true;
       if (renderMainVehicle) {
         drawVehicle();
       }
@@ -2287,23 +2364,31 @@
         note: "Solved steering slew for the current radius and heading change."
       }, {
         label: "Rp 0",
-        value: rp
-          ? `X: ${formatFixed10(rp.X)}, Y: ${formatFixed10(rp.Y)}, Psi: ${formatFixed10(rp.Psi)}, L: ${formatFixed10(rp.length)}`
-          : "NaN",
+        value: formatCoordSummary(rp),
         note: "Stored rear coordinate for the active vehicle."
       }, {
         label: "Sv",
-        value: sv
-          ? `X: ${formatFixed10(sv.X)}, Y: ${formatFixed10(sv.Y)}, Psi: ${formatFixed10(sv.Psi)}, L: ${formatFixed10(sv.length)}`
-          : "NaN",
+        value: formatCoordSummary(sv),
         note: "Derived steer coordinate from Rp and Sp."
       }, {
         label: "Bisector",
         value: bisectorContact
           ? `X: ${formatFixed10(bisectorContact.coordinate.x)}, Y: ${formatFixed10(bisectorContact.coordinate.y)}, Sv: ${formatFixed10(bisectorContact.svTravelDistance)}`
           : "NaN",
-        note: "Vehicle coordinate and Sv travel distance when Rp is on the bisector and perpendicular to it."
+        note: "Vehicle coordinate and travel distance when Rp is on the bisector and perpendicular to it."
       }];
+      const shadowVehicles = state.Vehicles.slice(1);
+      for (let i = 0; i < shadowVehicles.length; i += 1) {
+        const vehicle = shadowVehicles[i];
+        const shadowSv = getVehicleSv(vehicle);
+        entries.push({
+          label: `Rp ${i + 1}`,
+          value: formatCoordSummary(vehicle?.Rp),
+          note: shadowSv
+            ? `Sp heading change: ${formatFixed10(vehicle?.Sp?.Psi)}. Sv: ${formatCoordSummary(shadowSv)}`
+            : `Sp heading change: ${formatFixed10(vehicle?.Sp?.Psi)}.`
+        });
+      }
       for (const entry of entries) {
         const control = document.createElement("div");
         control.className = "control";
@@ -2343,6 +2428,11 @@
       return Math.max(0, Number(geometry?.headingChange) || 0);
     }
 
+    function getSolverInitialSl(value) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0.1 ? numeric : Math.PI / 4;
+    }
+
     function getCurveLengthFromGeometry(geometry = state.vehicle) {
       const radius = Number(geometry?.radius) || 0;
       return radius * getHeadingChange(geometry);
@@ -2359,6 +2449,11 @@
 
     function formatFixed10(value) {
       return (Number(value) || 0).toFixed(10);
+    }
+
+    function formatCoordSummary(coord) {
+      if (!coord) return "NaN";
+      return `X: ${formatFixed10(coord.X)}, Y: ${formatFixed10(coord.Y)}, Psi: ${formatFixed10(coord.Psi)}, L: ${formatFixed10(coord.length)}`;
     }
 
     function vectorAtPoint(point, baseAngle, length, label, color) {
@@ -2568,7 +2663,7 @@
       const cursorX = event.clientX - rect.left;
       const cursorY = event.clientY - rect.top;
       const before = screenToWorld(cursorX, cursorY);
-      state.view.scale = clamp(state.view.scale * zoomFactor, 40, 500);
+      state.view.scale = Math.max(1e-6, state.view.scale * zoomFactor);
       state.view.offsetX = cursorX - rect.width / 2 - before.x * state.view.scale;
       state.view.offsetY = cursorY - rect.height / 2 + before.y * state.view.scale;
       saveState();
@@ -2637,7 +2732,6 @@
     });
 
     function syncInputs() {
-      const activeVehicle = getActiveVehicle();
       arcRadiusInput.value = Number(state.arc?.radius) || 1;
       arcAngleInput.value = Number(state.arc?.angle) || (Math.PI / 4);
     }
@@ -2655,7 +2749,9 @@
       const activeVehicle = getActiveVehicle();
       const result = solveVehicleSlForBisectorAlignment(vehicleVector, {
         geometry: getVehicleGeometry(),
-        initialSl: Number.isFinite(Number(activeVehicle?.sl)) ? Number(activeVehicle.sl) : 0.01
+        initialSl: Number.isFinite(Number(activeVehicle?.sl)) && Number(activeVehicle.sl) > 0.1
+          ? Number(activeVehicle.sl)
+          : Math.PI / 4
       });
       if (Number.isFinite(result.sl)) {
         activeVehicle.sl = result.sl;
@@ -2779,15 +2875,23 @@
         xs.push(start.x, end.x);
         ys.push(start.y, end.y);
       }
-      const minX = Math.min(...xs) - 1.2;
-      const maxX = Math.max(...xs) + 1.2;
-      const minY = Math.min(...ys) - 1.2;
-      const maxY = Math.max(...ys) + 1.2;
+      const minXRaw = Math.min(...xs);
+      const maxXRaw = Math.max(...xs);
+      const minYRaw = Math.min(...ys);
+      const maxYRaw = Math.max(...ys);
+      const rangeXRaw = Math.max(0.01, maxXRaw - minXRaw);
+      const rangeYRaw = Math.max(0.01, maxYRaw - minYRaw);
+      const paddingX = Math.max(0.4, rangeXRaw * 0.08);
+      const paddingY = Math.max(0.4, rangeYRaw * 0.08);
+      const minX = minXRaw - paddingX;
+      const maxX = maxXRaw + paddingX;
+      const minY = minYRaw - paddingY;
+      const maxY = maxYRaw + paddingY;
       const rangeX = Math.max(0.01, maxX - minX);
       const rangeY = Math.max(0.01, maxY - minY);
       const scaleX = rect.width / rangeX;
       const scaleY = rect.height / rangeY;
-      state.view.scale = clamp(Math.min(scaleX, scaleY) * 0.82, 40, 500);
+      state.view.scale = Math.max(1e-6, Math.min(scaleX, scaleY) * 0.96);
       const centerX = (minX + maxX) / 2;
       const centerY = (minY + maxY) / 2;
       state.view.offsetX = -centerX * state.view.scale;
@@ -2818,15 +2922,23 @@
       if (!xs.length || !ys.length) {
         return;
       }
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
+      const minXRaw = Math.min(...xs);
+      const maxXRaw = Math.max(...xs);
+      const minYRaw = Math.min(...ys);
+      const maxYRaw = Math.max(...ys);
+      const rangeXRaw = Math.max(0.01, maxXRaw - minXRaw);
+      const rangeYRaw = Math.max(0.01, maxYRaw - minYRaw);
+      const paddingX = Math.max(0.25, rangeXRaw * 0.06);
+      const paddingY = Math.max(0.25, rangeYRaw * 0.06);
+      const minX = minXRaw - paddingX;
+      const maxX = maxXRaw + paddingX;
+      const minY = minYRaw - paddingY;
+      const maxY = maxYRaw + paddingY;
       const rangeX = Math.max(0.01, maxX - minX);
       const rangeY = Math.max(0.01, maxY - minY);
       const scaleX = rect.width / rangeX;
       const scaleY = rect.height / rangeY;
-      state.view.scale = clamp(Math.min(scaleX, scaleY) * 0.92, 40, 500);
+      state.view.scale = Math.max(1e-6, Math.min(scaleX, scaleY) * 0.98);
       const centerX = (minX + maxX) / 2;
       const centerY = (minY + maxY) / 2;
       state.view.offsetX = -centerX * state.view.scale;
@@ -2846,7 +2958,7 @@
         return;
       }
       initialized = true;
-      state.Vehicles[0] = createAnchorVehicle(Number(state.Vehicles[0]?.sl) || 0.01);
+      state.Vehicles[0] = createAnchorVehicle(getSolverInitialSl(state.Vehicles[0]?.sl));
       enforceVectorAnchor();
       state.ui.vehicle = false;
       syncInputs();
