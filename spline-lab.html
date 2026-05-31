@@ -113,6 +113,14 @@
       border-bottom: 1px solid var(--line);
       background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
     }
+    .toolbar:empty {
+      height: 0;
+      min-height: 0;
+      padding: 0;
+      border-bottom: 0;
+      background: none;
+      overflow: hidden;
+    }
     .toolbar button {
       border: 1px solid rgba(255, 255, 255, 0.08);
       color: var(--text);
@@ -290,14 +298,7 @@
 
     <main class="workspace">
       <section class="stage-shell">
-        <div class="toolbar">
-          <button class="primary" id="addVectorBtn">Add vector</button>
-          <button id="resetBtn">Reset example</button>
-          <button id="exportBtn">Copy JSON</button>
-          <button id="fitBtn">Fit view</button>
-          <button id="toggleGuidesBtn" class="active">Guides on</button>
-          <button id="toggleVehicleBtn" class="active">Vehicle on</button>
-        </div>
+        <div class="toolbar" aria-hidden="true"></div>
         <div class="stage-wrap">
           <canvas id="stage"></canvas>
         </div>
@@ -333,12 +334,25 @@
     const STORAGE_KEY = "vehicle-vector-lab-state-v1";
     const canvas = document.getElementById("stage");
     const ctx = canvas.getContext("2d");
-    const addVectorBtn = document.getElementById("addVectorBtn");
-    const resetBtn = document.getElementById("resetBtn");
-    const exportBtn = document.getElementById("exportBtn");
-    const fitBtn = document.getElementById("fitBtn");
-    const toggleGuidesBtn = document.getElementById("toggleGuidesBtn");
-    const toggleVehicleBtn = document.getElementById("toggleVehicleBtn");
+    function createButtonShim(initialText = "") {
+      return {
+        textContent: initialText,
+        classList: {
+          add() {},
+          remove() {},
+          toggle() {}
+        },
+        addEventListener() {},
+        focus() {},
+        click() {}
+      };
+    }
+    const addVectorBtn = document.getElementById("addVectorBtn") || createButtonShim("Add vector");
+    const resetBtn = document.getElementById("resetBtn") || createButtonShim("Reset example");
+    const exportBtn = document.getElementById("exportBtn") || createButtonShim("Copy JSON");
+    const fitBtn = document.getElementById("fitBtn") || createButtonShim("Fit view");
+    const toggleGuidesBtn = document.getElementById("toggleGuidesBtn") || createButtonShim("Guides on");
+    const toggleVehicleBtn = document.getElementById("toggleVehicleBtn") || createButtonShim("Vehicle on");
     const arcRadiusInput = document.getElementById("arcRadius");
     const arcAngleInput = document.getElementById("arcAngle");
     const dependentList = document.getElementById("dependentList");
@@ -440,10 +454,11 @@
       return {
         view: { scale: 150, offsetX: 0, offsetY: 0 },
         radius: 4,
-        ui: { guides: true, vehicle: false },
-        arc: { radius: 1, angle: Math.PI / 2 },
+        ui: { guides: true, vehicle: true },
+        arc: { radius: 1, length: Math.PI / 2 },
         Vehicles: [createAnchorVehicle()],
         vehicleCopies: [],
+        simpleArcSolution: null,
         selectedId: null,
         vectors: []
       };
@@ -473,13 +488,19 @@
               ? Number(parsedVehicle.radius)
               : defaultState.radius),
           view: { ...defaultState.view, ...(parsed.view || {}) },
-          ui: { ...defaultState.ui, ...(parsed.ui || {}), vehicle: false },
+          ui: { ...defaultState.ui, ...(parsed.ui || {}), vehicle: true },
           arc: {
             ...defaultState.arc,
-            ...(parsed.arc || {})
+            ...(parsed.arc || {}),
+            length: Number.isFinite(Number(parsed.arc?.length))
+              ? Number(parsed.arc.length)
+              : (Number.isFinite(Number(parsed.arc?.angle))
+                ? Number(parsed.arc.angle)
+                : defaultState.arc.length)
           },
           Vehicles: normalizedVehicles,
           vehicleCopies: [],
+          simpleArcSolution: null,
           vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : defaultState.vectors),
         };
       } catch {
@@ -1469,7 +1490,6 @@
     function saveState() {
       enforceAnchors();
       enforceVectorAnchor();
-      syncVehicleShadows();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializableState()));
     }
 
@@ -1860,29 +1880,278 @@
       ctx.restore();
     }
 
+    function getSimpleArcLength(arc = state.arc) {
+      const length = Number(arc?.length);
+      if (Number.isFinite(length)) {
+        return length;
+      }
+      const angle = Number(arc?.angle);
+      return Number.isFinite(angle) ? angle : Math.PI / 2;
+    }
+
     function getSimpleArcGeometry() {
       const radius = Number(state.arc?.radius) || 1;
-      const angle = Number(state.arc?.angle) || (Math.PI / 4);
+      const arcLength = getSimpleArcLength();
       const center = { x: 0, y: radius };
       const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
+      const turnAngle = Number.isFinite(radius) && Math.abs(radius) > 1e-9
+        ? arcLength / radius
+        : 0;
       return {
         radius,
-        angle,
+        arcLength,
+        turnAngle,
         center,
         startAngle,
-        endAngle: startAngle + angle,
-        valid: Number.isFinite(radius) && Number.isFinite(angle) && angle !== 0
+        endAngle: startAngle + turnAngle,
+        valid: Number.isFinite(radius) && Number.isFinite(arcLength) && Math.abs(radius) > 1e-9 && arcLength !== 0
       };
     }
 
-    function sampleSimpleArcPoints(arc = getSimpleArcGeometry(), sampleCount = Math.max(24, Math.ceil(Math.abs(Number(arc?.angle) || 0) * 48))) {
+    function thetaProfile(value) {
+      const t = clamp(Number(value) || 0, 0, 1);
+      return t;
+    }
+
+    function getSimpleArcBisectorGeometry(arc = getSimpleArcGeometry()) {
+      if (!arc?.valid) {
+        return {
+          valid: false,
+          center: null,
+          bisectorPoint: null,
+          bisectorAngle: 0,
+          bisectorDir: null,
+          bisectorNormal: null
+        };
+      }
+      const bisectorAngle = arc.startAngle + arc.turnAngle / 2;
+      const bisectorDir = {
+        x: Math.cos(bisectorAngle),
+        y: Math.sin(bisectorAngle)
+      };
+      const bisectorNormal = {
+        x: -bisectorDir.y,
+        y: bisectorDir.x
+      };
+      const radius = Math.abs(Number(arc.radius) || 0);
+      const bisectorPoint = {
+        x: arc.center.x + bisectorDir.x * radius,
+        y: arc.center.y + bisectorDir.y * radius
+      };
+      return {
+        valid: true,
+        center: { ...arc.center },
+        bisectorPoint,
+        bisectorAngle,
+        bisectorDir,
+        bisectorNormal,
+        radius: Number(arc.radius) || 0,
+        arcLength: Number(arc.arcLength) || 0,
+        turnAngle: Number(arc.turnAngle) || 0
+      };
+    }
+
+    function wrapAngle(angle) {
+      let wrapped = Number(angle) || 0;
+      while (wrapped > Math.PI) wrapped -= Math.PI * 2;
+      while (wrapped < -Math.PI) wrapped += Math.PI * 2;
+      return wrapped;
+    }
+
+    function signedDistanceToLine(point, origin, direction) {
+      if (!point || !origin || !direction) return NaN;
+      return (Number(point.x) - Number(origin.x)) * Number(direction.y)
+        - (Number(point.y) - Number(origin.y)) * Number(direction.x);
+    }
+
+    function angleDistanceToPerpendicular(angle, lineAngle) {
+      const targetAngles = [lineAngle + Math.PI / 2, lineAngle - Math.PI / 2];
+      let best = Infinity;
+      for (const target of targetAngles) {
+        const error = Math.abs(wrapAngle(Number(angle) - target));
+        if (error < best) best = error;
+      }
+      return best;
+    }
+
+    function integrateLinearSteerPath(finalSteer, pathLength, sampleCount = Math.max(48, Math.ceil(Math.abs(Number(pathLength) || 0) * 96))) {
+      const count = Math.max(8, sampleCount);
+      const ds = (Number(pathLength) || 0) / count;
+      const points = [];
+      let x = 0;
+      let y = 0;
+      let psi = 0;
+      points.push({
+        x,
+        y,
+        heading: psi,
+        theta: 0
+      });
+      for (let i = 0; i <= count; i += 1) {
+        if (i === count) break;
+        const u = (i + 0.5) / count;
+        const theta = (Number(finalSteer) || 0) * thetaProfile(u);
+        psi += Math.tan(theta) * ds;
+        x += Math.cos(psi) * ds;
+        y += Math.sin(psi) * ds;
+        points.push({
+          x,
+          y,
+          heading: psi,
+          theta
+        });
+      }
+      return {
+        points,
+        terminalPose: {
+          x,
+          y,
+          angle: psi,
+          theta: Number(finalSteer) || 0
+        }
+      };
+    }
+
+    function solveSimpleArc(arc = getSimpleArcGeometry()) {
+      if (!arc?.valid) {
+        return {
+          success: false,
+          radius: Number(arc?.radius) || 0,
+          arcLength: Number(arc?.arcLength) || 0,
+          s: Number(arc?.arcLength) || 0,
+          sl: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
+          turnAngle: Number(arc?.turnAngle) || 0,
+          finalHeading: 0,
+          terminalPose: null,
+          terminalCoord: null,
+          pathPoints: []
+        };
+      }
+      const bisector = getSimpleArcBisectorGeometry(arc);
+      const turnDirection = Number(arc.radius) >= 0 ? 1 : -1;
+      const initialSteer = turnDirection * (Math.PI / 4);
+      const initialPathLength = Math.max(
+        Math.abs(Number(arc.arcLength) || 0) * 1.25,
+        Math.abs(Number(arc.radius) || 0) * 1.5,
+        0.5
+      );
+      const maxPathLength = Math.max(
+        Math.abs(Number(arc.arcLength) || 0) * 8,
+        Math.abs(Number(arc.radius) || 0) * 12,
+        8
+      );
+      const maxSteer = Math.PI / 2 - 0.01;
+      const steerMin = turnDirection >= 0 ? 0 : -maxSteer;
+      const steerMax = turnDirection >= 0 ? maxSteer : 0;
+      const scoreCandidate = (finalSteer, pathLength) => {
+        const result = integrateLinearSteerPath(finalSteer, pathLength);
+        const terminalPose = result.terminalPose || {};
+        const positionError = Math.abs(signedDistanceToLine(terminalPose, bisector.center, bisector.bisectorDir));
+        const headingError = angleDistanceToPerpendicular(Number(terminalPose.angle) || 0, bisector.bisectorAngle);
+        const distanceScale = Math.max(
+          1,
+          Math.abs(Number(bisector.center?.x) || 0),
+          Math.abs(Number(bisector.center?.y) || 0),
+          Math.abs(Number(bisector.bisectorPoint?.x) || 0),
+          Math.abs(Number(bisector.bisectorPoint?.y) || 0),
+          Math.abs(Number(arc.radius) || 0),
+          Math.abs(Number(arc.arcLength) || 0)
+        );
+        return {
+          score: (positionError / distanceScale) ** 2 + headingError ** 2,
+          result,
+          positionError,
+          headingError
+        };
+      };
+
+      let steerCenter = clamp(initialSteer, steerMin, steerMax);
+      let pathCenter = clamp(initialPathLength, 0.05, maxPathLength);
+      let steerSpan = Math.max(Math.PI / 6, Math.abs(initialSteer) * 0.75 + Math.PI / 12);
+      let pathSpan = Math.max(Math.abs(initialPathLength) * 0.75, Math.abs(Number(arc.arcLength) || 0), 0.75);
+      let best = null;
+
+      for (let pass = 0; pass < 5; pass += 1) {
+        const steerSamples = 9;
+        const pathSamples = 9;
+        const steerLeft = clamp(steerCenter - steerSpan, steerMin, steerMax);
+        const steerRight = clamp(steerCenter + steerSpan, steerMin, steerMax);
+        const pathLeft = clamp(pathCenter - pathSpan, 0.05, maxPathLength);
+        const pathRight = clamp(pathCenter + pathSpan, 0.05, maxPathLength);
+
+        for (let i = 0; i < steerSamples; i += 1) {
+          const steerT = steerSamples === 1 ? 0 : i / (steerSamples - 1);
+          const finalSteer = steerLeft + (steerRight - steerLeft) * steerT;
+          for (let j = 0; j < pathSamples; j += 1) {
+            const pathT = pathSamples === 1 ? 0 : j / (pathSamples - 1);
+            const pathLength = pathLeft + (pathRight - pathLeft) * pathT;
+            const scored = scoreCandidate(finalSteer, pathLength);
+            if (!best || scored.score < best.score) {
+              best = {
+                finalSteer,
+                pathLength,
+                ...scored
+              };
+            }
+          }
+        }
+
+        if (!best) break;
+        steerCenter = best.finalSteer;
+        pathCenter = best.pathLength;
+        steerSpan = Math.max(Math.abs(steerRight - steerLeft) / 4, Math.PI / 180);
+        pathSpan = Math.max(Math.abs(pathRight - pathLeft) / 4, 1e-3);
+      }
+
+      if (!best) {
+        return {
+          success: false,
+          radius: Number(arc?.radius) || 0,
+          arcLength: Number(arc?.arcLength) || 0,
+          s: Number(arc?.arcLength) || 0,
+          sl: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
+          turnAngle: 0,
+          finalHeading: 0,
+          terminalPose: null,
+          terminalCoord: null,
+          pathPoints: []
+        };
+      }
+
+      const pathPoints = best.result.points;
+      const terminalPose = {
+        x: Number(best.result.terminalPose.x) || 0,
+        y: Number(best.result.terminalPose.y) || 0,
+        angle: Number(best.result.terminalPose.angle) || 0,
+        theta: Number(best.finalSteer) || 0,
+        heading: Number(best.result.terminalPose.angle) || 0,
+        radius: Number(arc.radius) || 0,
+        curveLength: Number(best.pathLength) || 0
+      };
+      return {
+        success: Number.isFinite(best.score),
+        radius: Number(arc.radius) || 0,
+        arcLength: Number(arc.arcLength) || 0,
+        s: Number(best.pathLength) || 0,
+        sl: Number(best.pathLength) ? Number(best.finalSteer) / Number(best.pathLength) : 0,
+        turnAngle: Number(best.finalSteer) || 0,
+        finalHeading: Number(best.result.terminalPose.angle) || 0,
+        curveLength: Number(best.pathLength) || 0,
+        terminalPose,
+        terminalCoord: createCoord(terminalPose.x, terminalPose.y, terminalPose.angle, 1, "Rp", "#7dd3fc"),
+        pathPoints,
+        bisector
+      };
+    }
+
+    function sampleSimpleArcPoints(arc = getSimpleArcGeometry(), sampleCount = Math.max(24, Math.ceil(Math.abs(Number(arc?.turnAngle) || 0) * 48))) {
       if (!arc?.valid) return [];
       const points = [];
       const radius = Math.abs(Number(arc.radius) || 0);
       const count = Math.max(2, sampleCount);
       for (let i = 0; i <= count; i += 1) {
         const t = count === 0 ? 0 : i / count;
-        const theta = arc.startAngle + arc.angle * t;
+        const theta = arc.startAngle + arc.turnAngle * t;
         points.push({
           x: arc.center.x + Math.cos(theta) * radius,
           y: arc.center.y + Math.sin(theta) * radius
@@ -1893,44 +2162,12 @@
 
     function getSimpleArcBisectorPoint(arc = getSimpleArcGeometry()) {
       if (!arc?.valid) return null;
-      const bisectorAngle = arc.startAngle + arc.angle / 2;
-      const dir = {
-        x: Math.cos(bisectorAngle),
-        y: Math.sin(bisectorAngle)
+      const bisectorAngle = arc.startAngle + arc.turnAngle / 2;
+      const radius = Math.abs(Number(arc.radius) || 0);
+      return {
+        x: arc.center.x + Math.cos(bisectorAngle) * radius,
+        y: arc.center.y + Math.sin(bisectorAngle) * radius
       };
-      const origin = arc.center;
-      const radiusLineX = Number(arc.radius) || 0;
-      const candidates = [];
-
-      if (Math.abs(dir.y) > 1e-9) {
-        const tY0 = (0 - origin.y) / dir.y;
-        if (tY0 > 0) {
-          candidates.push({
-            t: tY0,
-            point: {
-              x: origin.x + dir.x * tY0,
-              y: 0
-            }
-          });
-        }
-      }
-
-      if (Math.abs(dir.x) > 1e-9) {
-        const tXRadius = (radiusLineX - origin.x) / dir.x;
-        if (tXRadius > 0) {
-          candidates.push({
-            t: tXRadius,
-            point: {
-              x: radiusLineX,
-              y: origin.y + dir.y * tXRadius
-            }
-          });
-        }
-      }
-
-      if (!candidates.length) return null;
-      candidates.sort((a, b) => a.t - b.t);
-      return candidates[0].point;
     }
 
     function drawSimpleArc() {
@@ -1979,6 +2216,10 @@
         ctx.moveTo(centerS.x, centerS.y);
         ctx.lineTo(bisectorEndS.x, bisectorEndS.y);
         ctx.stroke();
+        ctx.fillStyle = "rgba(126,240,191,0.92)";
+        ctx.beginPath();
+        ctx.arc(bisectorEndS.x, bisectorEndS.y, 3.75, 0, Math.PI * 2);
+        ctx.fill();
         ctx.restore();
       }
 
@@ -1986,7 +2227,7 @@
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
-      ctx.fillText(`r = ${Math.abs(arc.radius).toFixed(2)}, θ = ${(arc.angle).toFixed(2)} rad`, endS.x + 10, endS.y - 8);
+      ctx.fillText(`r = ${Math.abs(arc.radius).toFixed(2)}, Al = ${(arc.arcLength).toFixed(2)}`, endS.x + 10, endS.y - 8);
       ctx.restore();
     }
 
@@ -2056,123 +2297,21 @@
     }
 
     function drawVehicle() {
-      const activeVehicle = getActiveVehicle();
-      const vehicleGeometry = getVehicleGeometry();
-      const radius = Number(state.radius) || 0;
-      const curveLength = Math.max(0, getCurveLengthFromGeometry(vehicleGeometry));
-      const turnGeometry = getCurrentTurnBisectorGeometry(getVehicleVector(), vehicleGeometry);
-      const vehicleVector = normalizeVector(getVehicleVector() || { x: 0, y: 0, angle: 0, length: 1, label: "Rp", color: "#7dd3fc" });
-      const pose = activeVehicle?.finalPose || sampleVehiclePoseForSlew(
-        vehicleVector,
-        curveLength,
-        Number(activeVehicle?.sl) || 0,
-        curveLength,
-        radius
-      );
-      const bodyAngle = Number(pose.angle) || 0;
-      const rear = {
-        x: Number(pose.x) || 0,
-        y: Number(pose.y) || 0
-      };
-      const bodyLength = Math.max(0.25, Number(vehicleVector.length) || 1);
-      const front = {
-        x: rear.x + Math.cos(bodyAngle) * bodyLength,
-        y: rear.y + Math.sin(bodyAngle) * bodyLength
-      };
-      const rearS = worldToScreen(rear.x, rear.y);
-      const frontS = worldToScreen(front.x, front.y);
+      const solution = state.simpleArcSolution || solveSimpleArc();
+      if (!solution?.success || !solution.terminalPose) return;
+      const pose = solution.terminalPose;
+      drawVehicleInstance(pose, {
+        alpha: 1,
+        bodyWidth: 4,
+        steerWidth: 2.5,
+        label: "Rp",
+        steerLabel: "Sv"
+      });
+      const rearS = worldToScreen(Number(pose.x) || 0, Number(pose.y) || 0);
       ctx.save();
-
-      if (turnGeometry.valid && radius !== 0) {
-        const absRadius = Math.abs(turnGeometry.radius);
-        const center = turnGeometry.center;
-        const centerS = worldToScreen(center.x, center.y);
-        const sampleCount = Math.max(16, Math.ceil(Math.abs(turnGeometry.turnAngle) * 24));
-        const arcPoints = [];
-        for (let i = 0; i <= sampleCount; i += 1) {
-          const t = sampleCount === 0 ? 0 : i / sampleCount;
-          const angle = turnGeometry.startAngle + turnGeometry.turnAngle * t;
-          arcPoints.push({
-            x: center.x + Math.cos(angle) * absRadius,
-            y: center.y + Math.sin(angle) * absRadius
-          });
-        }
-
-        ctx.save();
-        ctx.setLineDash([6, 6]);
-        ctx.strokeStyle = "rgba(126,240,191,0.58)";
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        for (let i = 0; i < arcPoints.length; i += 1) {
-          const p = worldToScreen(arcPoints[i].x, arcPoints[i].y);
-          if (i === 0) ctx.moveTo(p.x, p.y);
-          else ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
-
-        ctx.strokeStyle = "rgba(126,240,191,0.42)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(centerS.x, centerS.y);
-        ctx.lineTo(
-          centerS.x + turnGeometry.bisectorDir.x * absRadius * state.view.scale,
-          centerS.y - turnGeometry.bisectorDir.y * absRadius * state.view.scale
-        );
-        ctx.stroke();
-
-        const arcBisectorS = worldToScreen(
-          center.x + Math.cos(turnGeometry.bisectorAngle) * absRadius,
-          center.y + Math.sin(turnGeometry.bisectorAngle) * absRadius
-        );
-        const arcEndS = worldToScreen(arcPoints[arcPoints.length - 1].x, arcPoints[arcPoints.length - 1].y);
-        ctx.fillStyle = "rgba(126,240,191,0.92)";
-        ctx.beginPath();
-        ctx.arc(centerS.x, centerS.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(arcBisectorS.x, arcBisectorS.y, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(arcEndS.x, arcEndS.y, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "rgba(237,243,255,0.88)";
-        ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-        ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
-        ctx.fillText(`Al = ${curveLength.toFixed(2)}`, arcEndS.x + 10, arcEndS.y - 8);
-        ctx.restore();
-      }
-
-      ctx.strokeStyle = "rgba(125,211,252,0.92)";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(rearS.x, rearS.y);
-      ctx.lineTo(frontS.x, frontS.y);
-      ctx.stroke();
-      const steerAngle = bodyAngle + (Number(pose.theta) || getThetaValue());
-      const turnIntersection = getVehiclePerpendicularIntersection(rear, bodyAngle, front, steerAngle);
-      if (turnIntersection) {
-        drawVehiclePerpendicularLine(rear, bodyAngle, 1, 2.6);
-        drawSteerPerpendicularLine(front, steerAngle, 1, 2.2);
-        drawVehicleIntersectionPoint(turnIntersection, 1);
-      }
-      const midWheelbase = { x: (rearS.x + frontS.x) / 2, y: (rearS.y + frontS.y) / 2 };
-
-      drawNode(rearS.x, rearS.y, "#7dd3fc");
-      drawNode(frontS.x, frontS.y, "#fbbf24");
-      drawOffsetLabel(rearS.x, rearS.y, "Rp 0");
-      drawOffsetLabel(frontS.x, frontS.y, "Sv", -12, -18);
-
-      const steerVectorEnd = {
-        x: front.x + Math.cos(steerAngle) * 0.25,
-        y: front.y + Math.sin(steerAngle) * 0.25
-      };
-      const steerVectorEndS = worldToScreen(steerVectorEnd.x, steerVectorEnd.y);
-      drawArrow(frontS, steerVectorEndS, "rgba(251,191,36,0.92)", "rgba(251,191,36,0.92)", 2.5);
-
-      const label = `θ = ${formatAngle(Number(pose.theta) || getThetaValue())}`;
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText(label, frontS.x + 12, frontS.y - 18);
+      ctx.fillText(`Terminal pose  ψ = ${formatAngle(Number(pose.heading) || Number(pose.angle) || 0)}`, rearS.x + 12, rearS.y - 32);
       ctx.restore();
     }
 
@@ -2194,8 +2333,10 @@
     }
 
     function drawVehiclePathTrace() {
-      if (!state.vehicleCopies.length) return;
-      const points = state.vehicleCopies.map(copy => worldToScreen(copy.x, copy.y));
+      const solution = state.simpleArcSolution || solveSimpleArc();
+      const pathPoints = Array.isArray(solution?.pathPoints) ? solution.pathPoints : [];
+      if (!pathPoints.length) return;
+      const points = pathPoints.map(point => worldToScreen(point.x, point.y));
       if (points.length < 2) return;
 
       ctx.save();
@@ -2308,8 +2449,7 @@
       ctx.fillStyle = "rgba(6, 10, 20, 0.38)";
       ctx.fillRect(0, 0, rect.width, rect.height);
 
-      state.vehicleCopies = buildVehicleCopies();
-      syncVehicleShadows();
+      state.vehicleCopies = [];
 
       if (initialVehicleSequenceFitPending) {
         fitView();
@@ -2322,11 +2462,10 @@
         drawVehiclePathTrace();
       }
       drawVehicleCopies();
-      const renderMainVehicle = true;
-      if (renderMainVehicle) {
+      drawSimpleArc();
+      if (state.ui.vehicle) {
         drawVehicle();
       }
-      drawSimpleArc();
       drawVectors();
 
       updateMetrics();
@@ -2339,7 +2478,7 @@
       selectedPill.textContent = `Selected: ${selected ? (selected.label || "vector") : "none"}`;
 
       modePill.textContent = `Mode: ${mode}`;
-      geometryPill.textContent = "Geometry: normalized";
+      geometryPill.textContent = "Geometry: mirrored spline";
       coordsReadout.textContent = lastPointerWorld
         ? `x: ${lastPointerWorld.x.toFixed(2)}, y: ${lastPointerWorld.y.toFixed(2)}`
         : "x: 0.00, y: 0.00";
@@ -2354,41 +2493,21 @@
     function updateDependentList() {
       if (!dependentListDirty) return;
       dependentList.innerHTML = "";
-      const activeVehicle = getActiveVehicle();
-      const rp = activeVehicle?.Rp || null;
-      const sv = getVehicleSv(activeVehicle);
-      const bisectorContact = getVehicleBisectorContactSolution();
+      const solution = state.simpleArcSolution || solveSimpleArc();
+      const terminalRp = solution?.terminalCoord || null;
       const entries = [{
         label: "Sl",
-        value: Number.isFinite(Number(activeVehicle?.sl)) ? Number(activeVehicle.sl).toFixed(3) : "NaN",
-        note: "Solved steering slew for the current radius and heading change."
+        value: Number.isFinite(Number(solution?.sl)) ? Number(solution.sl).toFixed(6) : "NaN",
+        note: "Linear theta slope that carries Rp into the bisector crossing."
       }, {
-        label: "Rp 0",
-        value: formatCoordSummary(rp),
-        note: "Stored rear coordinate for the active vehicle."
+        label: "s",
+        value: Number.isFinite(Number(solution?.s)) ? Number(solution.s).toFixed(6) : "NaN",
+        note: "Travel length needed for Rp to hit the bisector at right angles."
       }, {
-        label: "Sv",
-        value: formatCoordSummary(sv),
-        note: "Derived steer coordinate from Rp and Sp."
-      }, {
-        label: "Bisector",
-        value: bisectorContact
-          ? `X: ${formatFixed10(bisectorContact.coordinate.x)}, Y: ${formatFixed10(bisectorContact.coordinate.y)}, Sv: ${formatFixed10(bisectorContact.svTravelDistance)}`
-          : "NaN",
-        note: "Vehicle coordinate and travel distance when Rp is on the bisector and perpendicular to it."
+        label: "Rp",
+        value: formatCoordSummary(terminalRp),
+        note: "Terminal rear pose at the bisector crossing."
       }];
-      const shadowVehicles = state.Vehicles.slice(1);
-      for (let i = 0; i < shadowVehicles.length; i += 1) {
-        const vehicle = shadowVehicles[i];
-        const shadowSv = getVehicleSv(vehicle);
-        entries.push({
-          label: `Rp ${i + 1}`,
-          value: formatCoordSummary(vehicle?.Rp),
-          note: shadowSv
-            ? `Sp heading change: ${formatFixed10(vehicle?.Sp?.Psi)}. Sv: ${formatCoordSummary(shadowSv)}`
-            : `Sp heading change: ${formatFixed10(vehicle?.Sp?.Psi)}.`
-        });
-      }
       for (const entry of entries) {
         const control = document.createElement("div");
         control.className = "control";
@@ -2733,41 +2852,26 @@
 
     function syncInputs() {
       arcRadiusInput.value = Number(state.arc?.radius) || 1;
-      arcAngleInput.value = Number(state.arc?.angle) || (Math.PI / 4);
+      arcAngleInput.value = getSimpleArcLength();
     }
 
     function recalculateVehicleSolution(options = {}) {
       const persist = options.persist !== false;
       const render = options.render !== false;
-      const vehicleVector = getVehicleVector();
-      if (!vehicleVector) {
-        state.vehicleCopies = [];
-        const activeVehicle = getActiveVehicle();
-        if (activeVehicle) activeVehicle.finalPose = null;
-        return null;
-      }
       const activeVehicle = getActiveVehicle();
-      const result = solveVehicleSlForBisectorAlignment(vehicleVector, {
-        geometry: getVehicleGeometry(),
-        initialSl: Number.isFinite(Number(activeVehicle?.sl)) && Number(activeVehicle.sl) > 0.1
-          ? Number(activeVehicle.sl)
-          : Math.PI / 4
-      });
-      if (Number.isFinite(result.sl)) {
-        activeVehicle.sl = result.sl;
+      const result = solveSimpleArc();
+      state.simpleArcSolution = result;
+      state.arc.angle = getSimpleArcLength();
+      state.vehicleCopies = [];
+      if (activeVehicle) {
+        activeVehicle.finalPose = result?.terminalPose ? { ...result.terminalPose } : null;
+        if (Number.isFinite(Number(result?.sl))) {
+          activeVehicle.sl = Number(result.sl);
+        }
+        if (Number.isFinite(Number(result?.turnAngle))) {
+          activeVehicle.headingChange = Number(result.turnAngle);
+        }
       }
-      if (Number.isFinite(result.headingChange)) {
-        activeVehicle.headingChange = result.headingChange;
-      }
-      const sweepCopies = buildVehicleCopies(vehicleVector, null, result?.curveLength);
-      activeVehicle.finalPose = resolveFinalVehiclePose(
-        vehicleVector,
-        getVehicleGeometry(),
-        result?.evaluation?.endPose || null,
-        sweepCopies
-      );
-      state.vehicleCopies = buildVehicleCopies(vehicleVector, activeVehicle.finalPose, result?.curveLength);
-      syncVehicleShadows();
       dependentListDirty = true;
       syncInputs();
       if (persist) saveState();
@@ -2789,15 +2893,14 @@
         state.arc.radius = state.arc.radius < 0 ? -0.01 : 0.01;
       }
       syncInputs();
-      saveState();
-      scheduleRender();
+      recalculateVehicleSolution();
     });
     arcAngleInput.addEventListener("input", () => {
       const value = Number(arcAngleInput.value);
-      state.arc.angle = Math.max(0.01, value || 0);
+      state.arc.length = Math.max(0.01, value || 0);
+      state.arc.angle = state.arc.length;
       syncInputs();
-      saveState();
-      scheduleRender();
+      recalculateVehicleSolution();
     });
 
     window.addEventListener("keydown", (event) => {
@@ -2845,7 +2948,7 @@
         xs.push(0, arc.center.x, ...arcPoints.map(point => point.x));
         ys.push(0, arc.center.y, ...arcPoints.map(point => point.y));
       }
-      const finalPose = getActiveVehicle()?.finalPose || null;
+      const finalPose = state.simpleArcSolution?.terminalPose || getActiveVehicle()?.finalPose || null;
       if (finalPose) {
         const finalFront = {
           x: (Number(finalPose.x) || 0) + Math.cos(Number(finalPose.angle) || 0),
@@ -2854,21 +2957,10 @@
         xs.push(Number(finalPose.x) || 0, finalFront.x);
         ys.push(Number(finalPose.y) || 0, finalFront.y);
       }
-      const sweepCopies = state.vehicleCopies.length ? state.vehicleCopies : buildVehicleCopies();
-      for (const copy of sweepCopies) {
-        const rear = { x: Number(copy.x) || 0, y: Number(copy.y) || 0 };
-        const bodyAngle = Number(copy.angle) || 0;
-        const theta = Number(copy.theta) || 0;
-        const front = {
-          x: rear.x + Math.cos(bodyAngle),
-          y: rear.y + Math.sin(bodyAngle)
-        };
-        const steerEnd = {
-          x: front.x + Math.cos(bodyAngle + theta) * 0.25,
-          y: front.y + Math.sin(bodyAngle + theta) * 0.25
-        };
-        xs.push(rear.x, front.x, steerEnd.x);
-        ys.push(rear.y, front.y, steerEnd.y);
+      const pathPoints = Array.isArray(state.simpleArcSolution?.pathPoints) ? state.simpleArcSolution.pathPoints : [];
+      for (const point of pathPoints) {
+        xs.push(Number(point.x) || 0);
+        ys.push(Number(point.y) || 0);
       }
       for (const vector of state.vectors) {
         const { start, end } = vectorEndpoints(vector);
@@ -2960,7 +3052,7 @@
       initialized = true;
       state.Vehicles[0] = createAnchorVehicle(getSolverInitialSl(state.Vehicles[0]?.sl));
       enforceVectorAnchor();
-      state.ui.vehicle = false;
+      state.ui.vehicle = true;
       syncInputs();
       syncButtons();
       recalculateVehicleSolution({ persist: false, render: false });
