@@ -2376,12 +2376,22 @@
       // but do not render the shadow vehicles yet.
     }
 
-    function drawVehiclePathTrace() {
-      const solution = state.simpleArcSolution || solveSimpleArc();
+    function getSimpleArcPathTraces(solution = state.simpleArcSolution || solveSimpleArc()) {
       const pathPoints = Array.isArray(solution?.pathPoints) ? solution.pathPoints : [];
-      if (!pathPoints.length) return;
-      const points = pathPoints.map(point => worldToScreen(point.x, point.y));
-      if (points.length < 2) return;
+      if (!pathPoints.length) {
+        return { pathPoints, rpWorldPoints: [] };
+      }
+      const rpWorldPoints = pathPoints.map(point => ({
+        x: Number(point.x) || 0,
+        y: Number(point.y) || 0
+      }));
+      return { pathPoints, rpWorldPoints };
+    }
+
+    function drawVehiclePathTrace() {
+      const { rpWorldPoints } = getSimpleArcPathTraces();
+      const rpPoints = rpWorldPoints.map(point => worldToScreen(point.x, point.y));
+      if (rpPoints.length < 2) return;
 
       ctx.save();
       ctx.lineCap = "round";
@@ -2391,9 +2401,9 @@
       ctx.strokeStyle = "rgba(126,240,191,0.72)";
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i += 1) {
-        ctx.lineTo(points[i].x, points[i].y);
+      ctx.moveTo(rpPoints[0].x, rpPoints[0].y);
+      for (let i = 1; i < rpPoints.length; i += 1) {
+        ctx.lineTo(rpPoints[i].x, rpPoints[i].y);
       }
       ctx.stroke();
 
@@ -2401,15 +2411,15 @@
       ctx.strokeStyle = "rgba(125,211,252,0.28)";
       ctx.lineWidth = 6;
       ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i += 1) {
-        ctx.lineTo(points[i].x, points[i].y);
+      ctx.moveTo(rpPoints[0].x, rpPoints[0].y);
+      for (let i = 1; i < rpPoints.length; i += 1) {
+        ctx.lineTo(rpPoints[i].x, rpPoints[i].y);
       }
       ctx.stroke();
 
       // Mark the start and end so the line reads as a path, not just a decoration.
-      const start = points[0];
-      const end = points[points.length - 1];
+      const start = rpPoints[0];
+      const end = rpPoints[rpPoints.length - 1];
       ctx.fillStyle = "rgba(125,211,252,0.95)";
       ctx.beginPath();
       ctx.arc(start.x, start.y, 4, 0, Math.PI * 2);
@@ -2534,10 +2544,10 @@
       const solution = state.simpleArcSolution || solveSimpleArc();
       const terminalRp = solution?.terminalCoord || null;
       const entries = [{
-        label: "Terminal Sv",
+        label: "Terminal steer",
         value: Number.isFinite(Number(solution?.sl)) ? Number(solution.sl).toFixed(2) : "NaN",
       }, {
-        label: "Terminal s (Total distance that Sp travels through)",
+        label: "Terminal s (total distance the steered wheel travels)",
         value: Number.isFinite(Number(solution?.s)) ? Number(solution.s).toFixed(2) : "NaN",
       }, {
         label: "Rp",
@@ -2948,8 +2958,8 @@
         xs.push(Number(finalPose.x) || 0, finalFront.x);
         ys.push(Number(finalPose.y) || 0, finalFront.y);
       }
-      const pathPoints = Array.isArray(state.simpleArcSolution?.pathPoints) ? state.simpleArcSolution.pathPoints : [];
-      for (const point of pathPoints) {
+      const traces = getSimpleArcPathTraces();
+      for (const point of traces.pathPoints) {
         xs.push(Number(point.x) || 0);
         ys.push(Number(point.y) || 0);
       }
