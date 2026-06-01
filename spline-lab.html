@@ -2077,7 +2077,9 @@
       const positionTolerance = 1e-5;
       const headingTolerance = 1e-5;
       const scoreCandidate = (finalSteer, pathLength) => {
-        const result = integrateLinearSteerPath(finalSteer, pathLength);
+        const steerAtLimit = Math.abs(Number(finalSteer) || 0) >= maxSteer - 1e-6;
+        const effectiveSteer = steerAtLimit ? maxSteer : Number(finalSteer) || 0;
+        const result = integrateLinearSteerPath(effectiveSteer, pathLength);
         const terminalPose = result.terminalPose || {};
         const positionError = Math.abs(signedDistanceToLine(terminalPose, bisector.center, bisector.bisectorDir));
         const headingError = angleDistanceToPerpendicular(Number(terminalPose.angle) || 0, bisector.bisectorAngle);
@@ -2090,11 +2092,14 @@
           Math.abs(Number(arc.radius) || 0),
           Math.abs(Number(arc.arcLength) || 0)
         );
+        const positionScore = (positionError / distanceScale) ** 2;
+        const headingScore = headingError ** 2;
         return {
-          score: (positionError / distanceScale) ** 2 + headingError ** 2,
+          score: steerAtLimit ? positionScore : positionScore + headingScore,
           result,
           positionError,
-          headingError
+          headingError,
+          steerAtLimit
         };
       };
 
