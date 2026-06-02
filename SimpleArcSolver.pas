@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils,
   System.Math,
-  VehiclePoseSolver;
+  PoseSolver;
 
 type
   TVector2D = record
@@ -13,38 +13,197 @@ type
     Y: Double;
   end;
 
-  TSimpleArcPass = record
-    Pass: Integer;
-    FinalSteer: Double;
-    PathLength: Double;
-    PositionError: Double;
-    HeadingError: Double;
+  TVehicleVector = record
+    X: Double;
+    Y: Double;
+    Angle: Double;
+    Length: Double;
+  end;
+
+  TArcGeometry = record
+    Radius: Double;
+    HeadingChange: Double;
+    MaxHeadingChange: Double;
+  end;
+
+  TArcBisectorGeometry = record
+    Valid: Boolean;
+    Radius: Double;
+    CurveLength: Double;
+    TurnAngle: Double;
+    Center: TVector2D;
+    StartAngle: Double;
+    BisectorAngle: Double;
+    BisectorOrigin: TVector2D;
+    BisectorDir: TVector2D;
+  end;
+
+  TAlignmentScore = record
+    Score: Double;
+    LineError: Double;
+    NormalizedLineError: Double;
+    PerpendicularError: Double;
+    DistanceScale: Double;
+  end;
+
+  TAlignmentEvaluation = record
+    Sl: Double;
+    Error: Double;
+    Geometry: TArcBisectorGeometry;
+    Intersection: TVector2D;
+    EndPose: TVehiclePose;
+    Cor: TVector2D;
+    CorDistance: Double;
+    RearDistance: Double;
+    BodyAlignment: Double;
+    BodyAngleError: Double;
+    HeadingChange: Double;
+    CurveLength: Double;
+    Score: Double;
+  end;
+
+  TBracket = record
+    Valid: Boolean;
+    Left: Double;
+    Right: Double;
+    FLeft: Double;
+    FRight: Double;
+  end;
+
+  THeadingChangeSearchResult = record
+    Success: Boolean;
+    HeadingChange: Double;
+    CurveLength: Double;
+    Error: Double;
+    Reason: string;
+    Geometry: TArcBisectorGeometry;
+    Evaluation: TAlignmentEvaluation;
+    Bracket: TBracket;
+    Iterations: Integer;
+    Value: Double;
+  end;
+
+  TSolverOptions = record
+    InitialSl: Double;
+    MaxSpan: Double;
+    Passes: Integer;
+    SampleCount: Integer;
+    Tolerance: Double;
+    BodyTolerance: Double;
   end;
 
   TSimpleArcSolution = record
     Success: Boolean;
-    Radius: Double;
-    DeltaPsi: Double;
-    ArcLength: Double;
-    SteerMax: Double;
-    ShadowCount: Integer;
-    S: Double;
     Sl: Double;
-    TurnAngle: Double;
-    FinalHeading: Double;
-    PositionError: Double;
-    HeadingError: Double;
-    TerminalPose: TVehiclePose;
-    FinalPose: TVehiclePose;
-    Passes: TArray<TSimpleArcPass>;
+    HeadingChange: Double;
+    CurveLength: Double;
+    Error: Double;
+    Reason: string;
+    InitialSl: Double;
+    MaxSpan: Double;
+    Geometry: TArcBisectorGeometry;
+    Intersection: TVector2D;
+    Cor: TVector2D;
+    Evaluation: TAlignmentEvaluation;
+    Inner: THeadingChangeSearchResult;
+    Iterations: Integer;
+    Value: Double;
+    RearDistance: Double;
+    BodyAlignment: Double;
+    BodyAngleError: Double;
   end;
 
+function DefaultSolverOptions: TSolverOptions;
+
+function GetHeadingChange(const Geometry: TArcGeometry): Double;
+function GetCurveLengthFromGeometry(const Geometry: TArcGeometry): Double;
+function GetVehicleCorPoint(const Geometry: TArcGeometry): TVector2D;
+function GetCurrentTurnBisectorGeometry(
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TArcBisectorGeometry;
+
+function EvaluateVehicleBisectorAlignmentError(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TAlignmentEvaluation;
+
+function ScoreVehicleBisectorAlignment(
+  const Evaluation: TAlignmentEvaluation;
+  const Geometry: TArcGeometry
+): TAlignmentScore;
+
+function SolveVehicleHeadingChangeForBisectorAlignment(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): THeadingChangeSearchResult;
+
+function EvaluateVehicleCombinedAlignment(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TAlignmentEvaluation; overload;
+
+function EvaluateVehicleCombinedAlignment(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry;
+  const Options: TSolverOptions
+): TAlignmentEvaluation; overload;
+
+function SolveVehicleSlForBisectorAlignment(
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry;
+  const Options: TSolverOptions
+): TSimpleArcSolution; overload;
+
+function SolveVehicleSlForBisectorAlignment(
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TSimpleArcSolution; overload;
+
 function SolveSimpleArc(
-  const Radius, DeltaPsi, SteerMaxDeg: Double;
-  const ShadowCount: Integer = 9
+  const Radius, HeadingChange, InitialSl: Double;
+  const VehicleVector: TVehicleVector
 ): TSimpleArcSolution;
 
 implementation
+
+type
+  TSearchCandidate = record
+    Valid: Boolean;
+    X: Double;
+    Y: Double;
+  end;
+
+  TRootSearchResult = record
+    Success: Boolean;
+    Reason: string;
+    Root: Double;
+    Value: Double;
+    Iterations: Integer;
+    Bracket: TBracket;
+  end;
+
+function IsFiniteDouble(const Value: Double): Boolean;
+begin
+  Result := (Value = Value) and (Abs(Value) < 1.0E300);
+end;
+
+function MakeVector(const X, Y: Double): TVector2D;
+begin
+  Result.X := X;
+  Result.Y := Y;
+end;
+
+function MakeGeometry(const Radius, HeadingChange, MaxHeadingChange: Double): TArcGeometry;
+begin
+  Result.Radius := Radius;
+  Result.HeadingChange := HeadingChange;
+  Result.MaxHeadingChange := MaxHeadingChange;
+end;
 
 function ClampDouble(const Value, AMin, AMax: Double): Double;
 begin
@@ -55,336 +214,802 @@ begin
     Result := AMax;
 end;
 
-function WrapAngle(const Angle: Double): Double;
-begin
-  Result := Angle;
-  while Result > Pi do
-    Result := Result - (2 * Pi);
-  while Result < -Pi do
-    Result := Result + (2 * Pi);
-end;
-
-function NormalizePositiveAngle(const Angle: Double): Double;
-begin
-  Result := WrapAngle(Angle);
-  if Result < 0 then
-    Result := Result + (2 * Pi);
-end;
-
-function SignedDistanceToLine(const Point, Origin, Direction: TVector2D): Double;
-begin
-  Result := (Point.X - Origin.X) * Direction.Y - (Point.Y - Origin.Y) * Direction.X;
-end;
-
-function AngleDistanceToPerpendicular(const Angle, LineAngle: Double): Double;
+function NormalizePointDirection(const Vector: TVector2D): TVector2D;
 var
-  Target: Double;
-  ErrorValue: Double;
+  LengthValue: Double;
 begin
-  Result := 1.0E300;
-  Target := LineAngle + Pi / 2;
-  ErrorValue := Abs(WrapAngle(Angle - Target));
-  if ErrorValue < Result then
-    Result := ErrorValue;
-
-  Target := LineAngle - Pi / 2;
-  ErrorValue := Abs(WrapAngle(Angle - Target));
-  if ErrorValue < Result then
-    Result := ErrorValue;
-end;
-
-function MakeVector(const X, Y: Double): TVector2D;
-begin
-  Result.X := X;
-  Result.Y := Y;
-end;
-
-function BuildLocalBisector(const Radius, DeltaPsi: Double; out Center, BisectorDir: TVector2D; out BisectorAngle, TurnAngle: Double): Boolean;
-var
-  StartAngle: Double;
-begin
-  Result := (Abs(Radius) > 1e-12) and (DeltaPsi <> 0);
-  if not Result then
+  LengthValue := Hypot(Vector.X, Vector.Y);
+  if LengthValue <= 0 then
   begin
-    Center := MakeVector(0, 0);
-    BisectorDir := MakeVector(0, 0);
-    BisectorAngle := 0;
-    TurnAngle := 0;
+    Result.X := 0;
+    Result.Y := 0;
     Exit;
   end;
 
-  Center := MakeVector(0, Radius);
-  StartAngle := IfThen(Radius >= 0, -Pi / 2, Pi / 2);
-  TurnAngle := IfThen(Radius >= 0, DeltaPsi, -DeltaPsi);
-  BisectorAngle := StartAngle + TurnAngle / 2;
-  BisectorDir := MakeVector(Cos(BisectorAngle), Sin(BisectorAngle));
+  Result.X := Vector.X / LengthValue;
+  Result.Y := Vector.Y / LengthValue;
 end;
 
-function EvaluateLinearSteerPath(
-  const Radius, DeltaPsi, SteerMax, FinalSteer, PathLength: Double;
-  out TerminalPose: TVehiclePose;
-  out PositionError, HeadingError: Double
+function Dot2(const A, B: TVector2D): Double;
+begin
+  Result := A.X * B.X + A.Y * B.Y;
+end;
+
+function Cross2(const A, B: TVector2D): Double;
+begin
+  Result := A.X * B.Y - A.Y * B.X;
+end;
+
+function IntersectLines(
+  const P1, D1, P2, D2: TVector2D;
+  out Point: TVector2D
 ): Boolean;
 var
-  Slew: Double;
-  Center, BisectorDir, RearPoint: TVector2D;
-  BisectorAngle, TurnAngle, TerminalHeading: Double;
-  EffectiveSteer: Double;
+  Determinant: Double;
+  Dx, Dy, T: Double;
 begin
-  Result := False;
-  TerminalPose := Default(TVehiclePose);
-  PositionError := NaN;
-  HeadingError := NaN;
-
-  if not BuildLocalBisector(Radius, DeltaPsi, Center, BisectorDir, BisectorAngle, TurnAngle) then
+  Determinant := D1.X * D2.Y - D1.Y * D2.X;
+  if Abs(Determinant) < 1e-9 then
+  begin
+    Result := False;
+    Point.X := 0;
+    Point.Y := 0;
     Exit;
+  end;
 
-  if Abs(PathLength) <= 1e-12 then
-    Exit;
-
-  EffectiveSteer := FinalSteer;
-  if Abs(EffectiveSteer) > SteerMax then
-    EffectiveSteer := Sign(EffectiveSteer) * SteerMax;
-
-  Slew := EffectiveSteer / PathLength;
-  TerminalPose := SampleVehiclePoseForSlew(0, 0, 0, PathLength, Slew, PathLength, Radius);
-
-  RearPoint := MakeVector(TerminalPose.X, TerminalPose.Y);
-  PositionError := Abs(SignedDistanceToLine(RearPoint, Center, BisectorDir));
-
-  TerminalHeading := TerminalPose.Angle;
-  HeadingError := AngleDistanceToPerpendicular(TerminalHeading, BisectorAngle);
+  Dx := P2.X - P1.X;
+  Dy := P2.Y - P1.Y;
+  T := (Dx * D2.Y - Dy * D2.X) / Determinant;
+  Point.X := P1.X + D1.X * T;
+  Point.Y := P1.Y + D1.Y * T;
   Result := True;
 end;
 
-function SolveSimpleArc(
-  const Radius, DeltaPsi, SteerMaxDeg: Double;
-  const ShadowCount: Integer
-): TSimpleArcSolution;
-type
-  TSearchCandidate = record
-    FinalSteer: Double;
-    PathLength: Double;
-    PositionError: Double;
-    HeadingError: Double;
-    Valid: Boolean;
-    TerminalPose: TVehiclePose;
-  end;
-
+function GetVehiclePerpendicularIntersection(
+  const Rear: TVector2D;
+  const BodyAngle: Double;
+  const Front: TVector2D;
+  const SteerAngle: Double;
+  out Point: TVector2D
+): Boolean;
 var
-  ArcLength: Double;
-  TurnDirection: Integer;
-  InitialSteer: Double;
-  InitialPathLength: Double;
-  MaxPathLength: Double;
-  SteerMaxRad: Double;
-  MaxSteer: Double;
-  SteerMin, SteerMax: Double;
-  SteerCenter, PathCenter: Double;
-  SteerSpan, PathSpan: Double;
-  PositionTolerance: Double;
-  HeadingTolerance: Double;
-  Best: TSearchCandidate;
-  HasBest: Boolean;
-  Trace: TArray<TSimpleArcPass>;
+  BlueDirection, YellowDirection: TVector2D;
+begin
+  BlueDirection.X := -Sin(BodyAngle);
+  BlueDirection.Y := Cos(BodyAngle);
+  YellowDirection.X := -Sin(SteerAngle);
+  YellowDirection.Y := Cos(SteerAngle);
+  Result := IntersectLines(Rear, BlueDirection, Front, YellowDirection, Point);
+end;
 
-  function BetterCandidate(const A, B: TSearchCandidate): Boolean;
-  begin
-    if not B.Valid then
-      Exit(A.Valid);
-    if not A.Valid then
-      Exit(False);
-    if A.PositionError < B.PositionError - 1e-12 then
-      Exit(True);
-    if A.PositionError > B.PositionError + 1e-12 then
-      Exit(False);
-    if A.HeadingError < B.HeadingError - 1e-12 then
-      Exit(True);
-    if A.HeadingError > B.HeadingError + 1e-12 then
-      Exit(False);
-    Result := False;
-  end;
+function DefaultSolverOptions: TSolverOptions;
+begin
+  Result.InitialSl := 0.01;
+  Result.MaxSpan := 128;
+  Result.Passes := 5;
+  Result.SampleCount := 21;
+  Result.Tolerance := 1e-7;
+  Result.BodyTolerance := 1e-6;
+end;
 
-  function EvaluateCandidate(const FinalSteer, PathLength: Double): TSearchCandidate;
+function GetHeadingChange(const Geometry: TArcGeometry): Double;
+begin
+  Result := Max(0, Geometry.HeadingChange);
+end;
+
+function GetCurveLengthFromGeometry(const Geometry: TArcGeometry): Double;
+begin
+  Result := Geometry.Radius * GetHeadingChange(Geometry);
+end;
+
+function GetVehicleCorPoint(const Geometry: TArcGeometry): TVector2D;
+begin
+  Result.X := 0;
+  Result.Y := Geometry.Radius;
+end;
+
+function GetCurrentTurnBisectorGeometry(
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TArcBisectorGeometry;
+var
+  RadiusValue, CurveLength, TurnAngle, StartAngle, BisectorAngle: Double;
+begin
+  RadiusValue := Geometry.Radius;
+  CurveLength := Max(0, GetCurveLengthFromGeometry(Geometry));
+
+  Result.Valid := False;
+  Result.Radius := RadiusValue;
+  Result.CurveLength := CurveLength;
+  Result.TurnAngle := 0;
+  Result.Center := MakeVector(0, 0);
+  Result.StartAngle := 0;
+  Result.BisectorAngle := 0;
+  Result.BisectorOrigin := MakeVector(0, 0);
+  Result.BisectorDir := MakeVector(0, 0);
+
+  if (Abs(RadiusValue) <= 1e-12) or (CurveLength <= 0) then
+    Exit;
+
+  TurnAngle := CurveLength / RadiusValue;
+  if RadiusValue >= 0 then
+    StartAngle := -Pi / 2
+  else
+    StartAngle := Pi / 2;
+  BisectorAngle := StartAngle + TurnAngle / 2;
+
+  Result.Valid := True;
+  Result.Radius := RadiusValue;
+  Result.CurveLength := CurveLength;
+  Result.TurnAngle := TurnAngle;
+  Result.Center := GetVehicleCorPoint(Geometry);
+  Result.StartAngle := StartAngle;
+  Result.BisectorAngle := BisectorAngle;
+  Result.BisectorOrigin := Result.Center;
+  Result.BisectorDir := MakeVector(Cos(BisectorAngle), Sin(BisectorAngle));
+end;
+
+function EvaluateVehicleBisectorAlignmentError(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TAlignmentEvaluation;
+var
+  BisectorGeometry: TArcBisectorGeometry;
+  CurveLength, RadiusValue: Double;
+  EndPose: TVehiclePose;
+  Rear, Front, CorPoint, BodyDirection: TVector2D;
+begin
+  BisectorGeometry := GetCurrentTurnBisectorGeometry(VehicleVector, Geometry);
+  Result := Default(TAlignmentEvaluation);
+  Result.Sl := CandidateSl;
+  Result.Geometry := BisectorGeometry;
+  Result.Error := NaN;
+  Result.CorDistance := NaN;
+  Result.RearDistance := NaN;
+  Result.BodyAlignment := NaN;
+  Result.BodyAngleError := NaN;
+  Result.Score := NaN;
+
+  if not BisectorGeometry.Valid then
+    Exit;
+
+  CurveLength := Max(0, GetCurveLengthFromGeometry(Geometry));
+  RadiusValue := Geometry.Radius;
+  EndPose := SampleVehiclePoseForSlew(
+    VehicleVector.X,
+    VehicleVector.Y,
+    VehicleVector.Angle,
+    CurveLength,
+    CandidateSl,
+    CurveLength,
+    RadiusValue
+  );
+
+  Rear := MakeVector(EndPose.X, EndPose.Y);
+  Front := MakeVector(
+    Rear.X + Cos(EndPose.Angle),
+    Rear.Y + Sin(EndPose.Angle)
+  );
+
+  if GetVehiclePerpendicularIntersection(
+    Rear,
+    EndPose.Angle,
+    Front,
+    EndPose.Angle + EndPose.Theta,
+    CorPoint
+  ) then
   begin
-    Result.Valid := EvaluateLinearSteerPath(
-      Radius, DeltaPsi, MaxSteer, FinalSteer, PathLength,
-      Result.TerminalPose, Result.PositionError, Result.HeadingError
+    Result.Intersection := CorPoint;
+    Result.Cor := CorPoint;
+    Result.CorDistance := Cross2(
+      MakeVector(
+        CorPoint.X - BisectorGeometry.BisectorOrigin.X,
+        CorPoint.Y - BisectorGeometry.BisectorOrigin.Y
+      ),
+      BisectorGeometry.BisectorDir
     );
-    Result.FinalSteer := FinalSteer;
-    Result.PathLength := PathLength;
+    Result.RearDistance := Result.CorDistance;
+  end
+  else
+  begin
+    Result.Intersection := MakeVector(0, 0);
+    Result.Cor := MakeVector(0, 0);
+    Result.CorDistance := NaN;
+    Result.RearDistance := NaN;
   end;
 
-  procedure SearchPathCandidates(
-    const FixedSteer, Center, Span: Double;
-    const Samples: Integer;
-    const Floor: Double;
-    out BestCandidate: TSearchCandidate;
-    out LeftBound, RightBound, NextSpan: Double
-  );
-  var
-    I, PathSamples: Integer;
-    T, PathLength, PathMin: Double;
-    Candidate: TSearchCandidate;
+  BodyDirection := NormalizePointDirection(MakeVector(Cos(EndPose.Angle), Sin(EndPose.Angle)));
+  if (BodyDirection.X = 0) and (BodyDirection.Y = 0) then
+    Result.BodyAlignment := NaN
+  else
+    Result.BodyAlignment := Dot2(BodyDirection, BisectorGeometry.BisectorDir);
+
+  Result.EndPose := EndPose;
+  Result.HeadingChange := Geometry.HeadingChange;
+  Result.CurveLength := CurveLength;
+  Result.Error := Result.CorDistance;
+end;
+
+function ScoreVehicleBisectorAlignment(
+  const Evaluation: TAlignmentEvaluation;
+  const Geometry: TArcGeometry
+): TAlignmentScore;
+var
+  LineError, BodyAlignmentValue, PerpendicularError, DistanceScale, NormalizedLineError: Double;
+begin
+  Result.Score := NaN;
+  Result.LineError := NaN;
+  Result.NormalizedLineError := NaN;
+  Result.PerpendicularError := NaN;
+  Result.DistanceScale := NaN;
+
+  if not Evaluation.Geometry.Valid then
+    Exit;
+
+  if IsFiniteDouble(Evaluation.CorDistance) then
+    LineError := Evaluation.CorDistance
+  else
+    LineError := Evaluation.RearDistance;
+
+  BodyAlignmentValue := Evaluation.BodyAlignment;
+  if (not IsFiniteDouble(LineError)) or (not IsFiniteDouble(BodyAlignmentValue)) then
   begin
-    BestCandidate.Valid := False;
-    PathSamples := Max(5, Samples);
-    PathMin := Max(1e-9, Floor);
-    LeftBound := ClampDouble(Center - Span, PathMin, MaxPathLength);
-    RightBound := ClampDouble(Center + Span, PathMin, MaxPathLength);
-
-    for I := 0 to PathSamples - 1 do
-    begin
-      if PathSamples = 1 then
-        T := 0
-      else
-        T := I / (PathSamples - 1);
-      PathLength := LeftBound + (RightBound - LeftBound) * T;
-      Candidate := EvaluateCandidate(FixedSteer, PathLength);
-      if BetterCandidate(Candidate, BestCandidate) then
-        BestCandidate := Candidate;
-    end;
-
-    NextSpan := Max((RightBound - LeftBound) * 0.25, PathMin);
+    Result.LineError := LineError;
+    Exit;
   end;
 
-  procedure SearchSteerCandidates(
-    const FixedPathLength, Center, Span: Double;
-    const Samples: Integer;
-    const Floor: Double;
-    out BestCandidate: TSearchCandidate;
-    out LeftBound, RightBound, NextSpan: Double
-  );
+  PerpendicularError := ArcSin(ClampDouble(BodyAlignmentValue, -1, 1));
+  DistanceScale := Max(1, Abs(Evaluation.Geometry.Radius));
+  DistanceScale := Max(DistanceScale, Abs(Evaluation.Geometry.CurveLength));
+  DistanceScale := Max(DistanceScale, Abs(Geometry.Radius));
+  DistanceScale := Max(DistanceScale, Abs(GetCurveLengthFromGeometry(Geometry)));
+  NormalizedLineError := LineError / DistanceScale;
+
+  Result.Score := Sqr(NormalizedLineError) + Sqr(PerpendicularError);
+  Result.LineError := LineError;
+  Result.NormalizedLineError := NormalizedLineError;
+  Result.PerpendicularError := PerpendicularError;
+  Result.DistanceScale := DistanceScale;
+end;
+
+function SolveVehicleHeadingChangeForBisectorAlignment(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): THeadingChangeSearchResult;
+var
+  StartHeadingChange, MaxSpan, InitialSpan, Tolerance: Double;
+  Bracket: TBracket;
+  RootResult: TRootSearchResult;
+  BestHeadingChange: Double;
+  Evaluation: TAlignmentEvaluation;
+  Score: TAlignmentScore;
+  BestCandidate: TSearchCandidate;
+  AdjustedGeometry: TArcGeometry;
+
+  function CorDistanceAt(const HeadingChange: Double): Double;
   var
-    I, SteerSamples: Integer;
-    T, FinalSteer, SteerFloor: Double;
-    Candidate: TSearchCandidate;
+    AdjustedGeometry: TArcGeometry;
   begin
-    BestCandidate.Valid := False;
-    SteerSamples := Max(5, Samples);
-    SteerFloor := Max(1e-9, Floor);
-    LeftBound := ClampDouble(Center - Span, SteerMin, SteerMax);
-    RightBound := ClampDouble(Center + Span, SteerMin, SteerMax);
-
-    for I := 0 to SteerSamples - 1 do
-    begin
-      if SteerSamples = 1 then
-        T := 0
-      else
-        T := I / (SteerSamples - 1);
-      FinalSteer := LeftBound + (RightBound - LeftBound) * T;
-      Candidate := EvaluateCandidate(FinalSteer, FixedPathLength);
-      if BetterCandidate(Candidate, BestCandidate) then
-        BestCandidate := Candidate;
-    end;
-
-    NextSpan := Max((RightBound - LeftBound) * 0.25, SteerFloor);
+    AdjustedGeometry := Geometry;
+    AdjustedGeometry.HeadingChange := HeadingChange;
+    Result := EvaluateVehicleBisectorAlignmentError(CandidateSl, VehicleVector, AdjustedGeometry).CorDistance;
   end;
 
-  procedure RunStage(const Passes, SteerSamples, PathSamples: Integer; const Shrink, SteerFloor, PathFloor: Double);
+  function ScoreAt(const HeadingChange: Double): Double;
   var
-    PassIndex: Integer;
-    PathBest, SteerBest: TSearchCandidate;
-    PathLeft, PathRight, PathNextSpan: Double;
-    SteerLeft, SteerRight, SteerNextSpan: Double;
-    TraceRow: TSimpleArcPass;
+    AdjustedGeometry: TArcGeometry;
+    Evaluation: TAlignmentEvaluation;
+    Score: TAlignmentScore;
   begin
-    for PassIndex := 0 to Passes - 1 do
+    AdjustedGeometry := Geometry;
+    AdjustedGeometry.HeadingChange := HeadingChange;
+    Evaluation := EvaluateVehicleBisectorAlignmentError(CandidateSl, VehicleVector, AdjustedGeometry);
+    Score := ScoreVehicleBisectorAlignment(Evaluation, AdjustedGeometry);
+    Result := Score.Score;
+  end;
+
+  function FindPositiveSignChangeBracket: TBracket;
+  var
+    Span, LeftValue, RightValue, Left, Right, Step, SampleX, SampleY: Double;
+    Attempt, Index: Integer;
+    PreviousX, PreviousY: Double;
+  begin
+    Result.Valid := False;
+    Span := Max(1e-3, Abs(InitialSpan));
+
+    for Attempt := 0 to 11 do
     begin
-      SearchPathCandidates(steerCenter, pathCenter, pathSpan, PathSamples, PathFloor, PathBest, PathLeft, PathRight, PathNextSpan);
-      if PathBest.Valid then
+      if Span > MaxSpan then
+        Break;
+
+      Left := Max(0, StartHeadingChange - Span);
+      Right := Max(Left + 1e-6, StartHeadingChange + Span);
+      Step := (Right - Left) / 10;
+      PreviousX := Left;
+      PreviousY := CorDistanceAt(PreviousX);
+
+      for Index := 1 to 10 do
       begin
-        pathCenter := PathBest.PathLength;
-        pathSpan := Max((PathRight - PathLeft) * Shrink, PathFloor);
-      end;
-
-      SearchSteerCandidates(pathCenter, steerCenter, steerSpan, SteerSamples, SteerFloor, SteerBest, SteerLeft, SteerRight, SteerNextSpan);
-      if SteerBest.Valid then
-      begin
-        steerCenter := SteerBest.FinalSteer;
-        steerSpan := Max((SteerRight - SteerLeft) * Shrink, SteerFloor);
-        if BetterCandidate(SteerBest, Best) then
+        SampleX := Left + Step * Index;
+        SampleY := CorDistanceAt(SampleX);
+        if not IsFiniteDouble(PreviousY) or not IsFiniteDouble(SampleY) then
         begin
-          Best := SteerBest;
-          HasBest := True;
+          PreviousX := SampleX;
+          PreviousY := SampleY;
+          Continue;
         end;
+
+        if PreviousY = 0 then
+        begin
+          Result.Valid := True;
+          Result.Left := PreviousX;
+          Result.Right := PreviousX;
+          Result.FLeft := PreviousY;
+          Result.FRight := PreviousY;
+          Exit;
+        end;
+
+        if SampleY = 0 then
+        begin
+          Result.Valid := True;
+          Result.Left := SampleX;
+          Result.Right := SampleX;
+          Result.FLeft := SampleY;
+          Result.FRight := SampleY;
+          Exit;
+        end;
+
+        if PreviousY * SampleY < 0 then
+        begin
+          Result.Valid := True;
+          Result.Left := PreviousX;
+          Result.Right := SampleX;
+          Result.FLeft := PreviousY;
+          Result.FRight := SampleY;
+          Exit;
+        end;
+
+        PreviousX := SampleX;
+        PreviousY := SampleY;
       end;
 
-      SetLength(Trace, Length(Trace) + 1);
-      TraceRow.Pass := Length(Trace) - 1;
-      TraceRow.FinalSteer := steerCenter;
-      TraceRow.PathLength := pathCenter;
-      if SteerBest.Valid then
+      Span := Span * 2;
+    end;
+  end;
+
+  function SolveBracketedRoot(const A, B, FA, FB: Double): TRootSearchResult;
+  var
+    Left, Right, FLeft, FRight, Candidate, FCandidate: Double;
+    Iteration: Integer;
+  begin
+    Result.Success := False;
+    Result.Reason := 'invalid-bracket';
+    Result.Root := NaN;
+    Result.Value := NaN;
+    Result.Iterations := 0;
+    Result.Bracket.Valid := False;
+    Result.Bracket.Left := A;
+    Result.Bracket.Right := B;
+    Result.Bracket.FLeft := FA;
+    Result.Bracket.FRight := FB;
+
+    Left := A;
+    Right := B;
+    FLeft := FA;
+    FRight := FB;
+
+    if (not IsFiniteDouble(FLeft)) or (not IsFiniteDouble(FRight)) or (FLeft * FRight > 0) then
+      Exit;
+
+    if Abs(FLeft) <= Tolerance then
+    begin
+      Result.Success := True;
+      Result.Reason := 'endpoint-root';
+      Result.Root := Left;
+      Result.Value := FLeft;
+      Result.Iterations := 0;
+      Result.Bracket.Valid := True;
+      Result.Bracket.Left := Left;
+      Result.Bracket.Right := Right;
+      Result.Bracket.FLeft := FLeft;
+      Result.Bracket.FRight := FRight;
+      Exit;
+    end;
+
+    if Abs(FRight) <= Tolerance then
+    begin
+      Result.Success := True;
+      Result.Reason := 'endpoint-root';
+      Result.Root := Right;
+      Result.Value := FRight;
+      Result.Iterations := 0;
+      Result.Bracket.Valid := True;
+      Result.Bracket.Left := Left;
+      Result.Bracket.Right := Right;
+      Result.Bracket.FLeft := FLeft;
+      Result.Bracket.FRight := FRight;
+      Exit;
+    end;
+
+    for Iteration := 1 to 64 do
+    begin
+      if (IsFiniteDouble(FLeft)) and (IsFiniteDouble(FRight)) and (FRight <> FLeft) then
+        Candidate := Right - (FRight * (Right - Left)) / (FRight - FLeft)
+      else
+        Candidate := (Left + Right) / 2;
+
+      if (not IsFiniteDouble(Candidate)) or (Candidate <= Min(Left, Right)) or (Candidate >= Max(Left, Right)) then
+        Candidate := (Left + Right) / 2;
+
+      FCandidate := CorDistanceAt(Candidate);
+      if not IsFiniteDouble(FCandidate) then
       begin
-        TraceRow.PositionError := SteerBest.PositionError;
-        TraceRow.HeadingError := SteerBest.HeadingError;
+        Candidate := (Left + Right) / 2;
+        FCandidate := CorDistanceAt(Candidate);
+      end;
+
+      if not IsFiniteDouble(FCandidate) then
+        Exit;
+
+      if (Abs(FCandidate) <= Tolerance) or (Abs(Right - Left) <= Tolerance) then
+      begin
+        Result.Success := True;
+        Result.Reason := 'converged';
+        Result.Root := Candidate;
+        Result.Value := FCandidate;
+        Result.Iterations := Iteration;
+        Result.Bracket.Valid := True;
+        Result.Bracket.Left := Left;
+        Result.Bracket.Right := Right;
+        Result.Bracket.FLeft := FLeft;
+        Result.Bracket.FRight := FRight;
+        Exit;
+      end;
+
+      if FLeft * FCandidate <= 0 then
+      begin
+        Right := Candidate;
+        FRight := FCandidate;
       end
       else
       begin
-        TraceRow.PositionError := NaN;
-        TraceRow.HeadingError := NaN;
+        Left := Candidate;
+        FLeft := FCandidate;
       end;
-      Trace[High(Trace)] := TraceRow;
-
-      if HasBest and (Best.PositionError <= PositionTolerance) and (Best.HeadingError <= HeadingTolerance) then
-        Break;
     end;
+
+    Result.Root := Candidate;
+    Result.Value := FCandidate;
+    Result.Iterations := 64;
+    Result.Reason := 'max-iterations';
   end;
 
+  function SearchPositiveMinimum: TSearchCandidate;
+  var
+    Left, Right, Width, Step, CandidateX, CandidateY: Double;
+    Pass, Index, Count, BestIndex: Integer;
+    LocalBestX, LocalBestY: Double;
+  begin
+    Result.Valid := False;
+    Result.X := ClampDouble(StartHeadingChange, 0, MaxSpan);
+    Result.Y := 1.0E300;
+
+    CandidateY := ScoreAt(Result.X);
+    if IsFiniteDouble(CandidateY) and (CandidateY < Result.Y) then
+      Result.Y := CandidateY;
+
+    Left := 0;
+    Right := Max(0, MaxSpan);
+
+    for Pass := 0 to 4 do
+    begin
+      Count := Max(5, 21 - Pass * 2);
+      Width := Max(1e-6, Right - Left);
+      LocalBestX := Result.X;
+      LocalBestY := Result.Y;
+      BestIndex := 0;
+
+      CandidateY := ScoreAt(Left);
+      if IsFiniteDouble(CandidateY) and (CandidateY < LocalBestY) then
+      begin
+        LocalBestX := Left;
+        LocalBestY := CandidateY;
+        BestIndex := 0;
+      end;
+
+      for Index := 1 to Count - 1 do
+      begin
+        CandidateX := Left + Width * (Index / (Count - 1));
+        CandidateY := ScoreAt(CandidateX);
+        if IsFiniteDouble(CandidateY) and (CandidateY < LocalBestY) then
+        begin
+          LocalBestX := CandidateX;
+          LocalBestY := CandidateY;
+          BestIndex := Index;
+        end;
+      end;
+
+      Result.X := LocalBestX;
+      Result.Y := LocalBestY;
+
+      Step := Width / (Count - 1);
+      Left := ClampDouble(LocalBestX - Step, 0, MaxSpan);
+      Right := ClampDouble(LocalBestX + Step, 0, MaxSpan);
+
+      if Abs(Right - Left) <= 1e-6 then
+        Break;
+
+      if BestIndex = 0 then
+        Right := Min(MaxSpan, Left + Max(Step * 2, 1e-3))
+      else if BestIndex = Count - 1 then
+        Left := Max(0, Right - Max(Step * 2, 1e-3));
+    end;
+
+    Result.Y := ScoreAt(Result.X);
+  end;
+
+  var
+    Bracket: TBracket;
+    Root: TBracket;
+    BestHeadingChange: Double;
+    Evaluation: TAlignmentEvaluation;
+    Score: TAlignmentScore;
+  begin
+    Result := Default(THeadingChangeSearchResult);
+    BisectorGeometry := GetCurrentTurnBisectorGeometry(VehicleVector, Geometry);
+    if not BisectorGeometry.Valid then
+    begin
+      Result.Success := False;
+      Result.HeadingChange := NaN;
+      Result.CurveLength := NaN;
+      Result.Error := NaN;
+      Result.Reason := 'invalid-geometry';
+      Result.Geometry := BisectorGeometry;
+      Exit;
+    end;
+
+    StartHeadingChange := Max(0, GetHeadingChange(Geometry));
+    if IsFiniteDouble(Geometry.MaxHeadingChange) then
+      MaxSpan := Abs(Geometry.MaxHeadingChange)
+    else
+      MaxSpan := 100;
+    InitialSpan := Max(0.5, StartHeadingChange * 0.5 + 0.5);
+    Tolerance := 1e-7;
+
+    Bracket := FindPositiveSignChangeBracket;
+    if Bracket.Valid then
+    begin
+      RootResult := SolveBracketedRoot(Bracket.Left, Bracket.Right, Bracket.FLeft, Bracket.FRight);
+      if RootResult.Success then
+      begin
+        BestHeadingChange := Max(0, RootResult.Root);
+        Evaluation := EvaluateVehicleBisectorAlignmentError(CandidateSl, VehicleVector, MakeGeometry(Geometry.Radius, BestHeadingChange, Geometry.MaxHeadingChange));
+        Result.Success := IsFiniteDouble(Evaluation.CorDistance) and (Abs(Evaluation.CorDistance) <= Tolerance);
+        Result.HeadingChange := BestHeadingChange;
+        Result.CurveLength := GetCurveLengthFromGeometry(MakeGeometry(Geometry.Radius, BestHeadingChange, Geometry.MaxHeadingChange));
+        Result.Error := Evaluation.CorDistance;
+        Result.Reason := RootResult.Reason;
+        Result.Geometry := Evaluation.Geometry;
+        Result.Evaluation := Evaluation;
+        Result.Bracket := RootResult.Bracket;
+        Result.Iterations := RootResult.Iterations;
+        Result.Value := RootResult.Value;
+        Exit;
+      end;
+    end;
+
+    // Fallback: minimize the bisector alignment score instead of bracketing a root.
+    BestCandidate := SearchPositiveMinimum;
+    BestHeadingChange := Max(0, BestCandidate.X);
+    AdjustedGeometry := MakeGeometry(Geometry.Radius, BestHeadingChange, Geometry.MaxHeadingChange);
+    Evaluation := EvaluateVehicleBisectorAlignmentError(CandidateSl, VehicleVector, AdjustedGeometry);
+    Score := ScoreVehicleBisectorAlignment(Evaluation, AdjustedGeometry);
+    Result.Success := IsFiniteDouble(Evaluation.CorDistance) and (Abs(Evaluation.CorDistance) <= Tolerance);
+    Result.HeadingChange := BestHeadingChange;
+    Result.CurveLength := GetCurveLengthFromGeometry(AdjustedGeometry);
+    Result.Error := Evaluation.CorDistance;
+    Result.Reason := 'minimum-search';
+    Result.Geometry := Evaluation.Geometry;
+    Result.Evaluation := Evaluation;
+    Result.Bracket.Valid := False;
+    Result.Iterations := 5 * 21;
+    Result.Value := Score.Score;
+  end;
+end;
+
+function EvaluateVehicleCombinedAlignment(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TAlignmentEvaluation;
 var
-  ShadowCountSafe: Integer;
+  Inner: THeadingChangeSearchResult;
+  BodyAlignmentValue: Double;
+begin
+  Inner := SolveVehicleHeadingChangeForBisectorAlignment(CandidateSl, VehicleVector, Geometry);
+  Result := Inner.Evaluation;
+  Result.HeadingChange := Inner.HeadingChange;
+  Result.CurveLength := Inner.CurveLength;
+
+  if (not Result.Geometry.Valid) or (not IsFiniteDouble(Result.EndPose.X)) or (not IsFiniteDouble(Result.EndPose.Y)) then
+  begin
+    Result.BodyAngleError := NaN;
+    Result.Score := NaN;
+    Exit;
+  end;
+
+  BodyAlignmentValue := Result.BodyAlignment;
+  Result.BodyAngleError := ArcSin(ClampDouble(BodyAlignmentValue, -1, 1));
+  Result.Score := Sqr(Result.BodyAngleError);
+end;
+
+function EvaluateVehicleCombinedAlignment(
+  const CandidateSl: Double;
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry;
+  const Options: TSolverOptions
+): TAlignmentEvaluation;
+begin
+  Result := EvaluateVehicleCombinedAlignment(CandidateSl, VehicleVector, Geometry);
+end;
+
+function SolveVehicleSlForBisectorAlignment(
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry;
+  const Options: TSolverOptions
+): TSimpleArcSolution;
+var
+  StartSl, MaxSpan, Tolerance, BodyTolerance: Double;
+  Passes, SampleCount: Integer;
+  BestCandidate: TSearchCandidate;
+  Evaluation: TAlignmentEvaluation;
+  RearAligned, BodyAligned: Boolean;
+
+  function CombinedScoreAt(const SlValue: Double): Double;
+  var
+    Evaluation: TAlignmentEvaluation;
+  begin
+    Evaluation := EvaluateVehicleCombinedAlignment(SlValue, VehicleVector, Geometry);
+    Result := Evaluation.Score;
+  end;
+
+  function SearchPositiveMinimum: TSearchCandidate;
+  var
+    Left, Right, Width, Step, CandidateX, CandidateY: Double;
+    Pass, Index, Count, BestIndex: Integer;
+    LocalBestX, LocalBestY: Double;
+  begin
+    Result.Valid := False;
+    Result.X := ClampDouble(StartSl, 0, MaxSpan);
+    Result.Y := 1.0E300;
+
+    CandidateY := CombinedScoreAt(Result.X);
+    if IsFiniteDouble(CandidateY) and (CandidateY < Result.Y) then
+      Result.Y := CandidateY;
+
+    Left := 0;
+    Right := Max(0, MaxSpan);
+
+    for Pass := 0 to Passes - 1 do
+    begin
+      Count := Max(5, SampleCount - Pass * 2);
+      Width := Max(1e-6, Right - Left);
+      LocalBestX := Result.X;
+      LocalBestY := Result.Y;
+      BestIndex := 0;
+
+      CandidateY := CombinedScoreAt(Left);
+      if IsFiniteDouble(CandidateY) and (CandidateY < LocalBestY) then
+      begin
+        LocalBestX := Left;
+        LocalBestY := CandidateY;
+        BestIndex := 0;
+      end;
+
+      for Index := 1 to Count - 1 do
+      begin
+        CandidateX := Left + Width * (Index / (Count - 1));
+        CandidateY := CombinedScoreAt(CandidateX);
+        if IsFiniteDouble(CandidateY) and (CandidateY < LocalBestY) then
+        begin
+          LocalBestX := CandidateX;
+          LocalBestY := CandidateY;
+          BestIndex := Index;
+        end;
+      end;
+
+      Result.X := LocalBestX;
+      Result.Y := LocalBestY;
+
+      Step := Width / (Count - 1);
+      Left := ClampDouble(LocalBestX - Step, 0, MaxSpan);
+      Right := ClampDouble(LocalBestX + Step, 0, MaxSpan);
+
+      if Abs(Right - Left) <= 1e-6 then
+        Break;
+
+      if BestIndex = 0 then
+        Right := Min(MaxSpan, Left + Max(Step * 2, 1e-3))
+      else if BestIndex = Count - 1 then
+        Left := Max(0, Right - Max(Step * 2, 1e-3));
+    end;
+
+    Result.Y := CombinedScoreAt(Result.X);
+  end;
+
 begin
   Result := Default(TSimpleArcSolution);
 
-  ArcLength := Abs(Radius) * Abs(DeltaPsi);
-  TurnDirection := IfThen(Radius >= 0, 1, -1);
-  InitialSteer := TurnDirection * (Pi / 4);
-  InitialPathLength := Max(Max(Abs(ArcLength) * 1.25, Abs(Radius) * 1.5), 0.5);
-  MaxPathLength := Max(Max(Abs(ArcLength) * 8, Abs(Radius) * 12), 8);
-  SteerMaxRad := DegToRad(ClampDouble(SteerMaxDeg, 45, 90));
-  MaxSteer := Min(SteerMaxRad, Pi / 2 - 1e-9);
-  SteerMin := IfThen(TurnDirection >= 0, 0.0, -MaxSteer);
-  SteerMax := IfThen(TurnDirection >= 0, MaxSteer, 0.0);
-  PositionTolerance := 1e-5;
-  HeadingTolerance := 1e-5;
+  StartSl := 0.01;
+  MaxSpan := 128;
+  Passes := 5;
+  SampleCount := 21;
+  Tolerance := 1e-7;
+  BodyTolerance := 1e-6;
 
-  SteerCenter := ClampDouble(InitialSteer, SteerMin, SteerMax);
-  PathCenter := ClampDouble(InitialPathLength, 1e-9, MaxPathLength);
-  SteerSpan := Max(Pi / 6, Abs(InitialSteer) * 0.75 + Pi / 12);
-  PathSpan := Max(Max(Abs(InitialPathLength) * 0.75, Abs(ArcLength)), 0.75);
-  HasBest := False;
-  SetLength(Trace, 0);
+  if IsFiniteDouble(Options.InitialSl) and (Options.InitialSl > 0) then
+    StartSl := Options.InitialSl;
+  if IsFiniteDouble(Options.MaxSpan) and (Options.MaxSpan > 0) then
+    MaxSpan := Options.MaxSpan;
+  if Options.Passes > 0 then
+    Passes := Options.Passes;
+  if Options.SampleCount > 0 then
+    SampleCount := Options.SampleCount;
+  if IsFiniteDouble(Options.Tolerance) and (Options.Tolerance > 0) then
+    Tolerance := Options.Tolerance;
+  if IsFiniteDouble(Options.BodyTolerance) and (Options.BodyTolerance > 0) then
+    BodyTolerance := Options.BodyTolerance;
 
-  RunStage(5, 9, 9, 0.25, Pi / 180, 1e-3);
-  if (not HasBest) or (Best.PositionError > PositionTolerance) or (Best.HeadingError > HeadingTolerance) then
-    RunStage(10, 21, 21, 0.2, 1e-7, 1e-7);
+  BestCandidate := SearchPositiveMinimum;
+  Evaluation := EvaluateVehicleCombinedAlignment(BestCandidate.X, VehicleVector, Geometry);
+  RearAligned := IsFiniteDouble(Evaluation.RearDistance) and (Abs(Evaluation.RearDistance) <= Tolerance);
+  BodyAligned := IsFiniteDouble(Evaluation.BodyAlignment) and (Abs(Evaluation.BodyAlignment) <= BodyTolerance);
 
-  Result.Success := HasBest and (Best.PositionError <= PositionTolerance) and (Best.HeadingError <= HeadingTolerance);
-  Result.Radius := Radius;
-  Result.DeltaPsi := DeltaPsi;
-  Result.ArcLength := ArcLength;
-  Result.SteerMax := SteerMaxDeg;
-  Result.S := IfThen(HasBest, Best.PathLength, 0);
-  Result.Sl := IfThen((HasBest) and (Abs(Best.PathLength) > 1e-12), Best.FinalSteer / Best.PathLength, 0);
-  Result.TurnAngle := IfThen(HasBest, Best.FinalSteer, 0);
-  Result.FinalHeading := IfThen(HasBest, Best.TerminalPose.Angle, 0);
-  Result.PositionError := IfThen(HasBest, Best.PositionError, NaN);
-  Result.HeadingError := IfThen(HasBest, Best.HeadingError, NaN);
-  if HasBest then
-    Result.TerminalPose := Best.TerminalPose
+  Result.Success := RearAligned and BodyAligned;
+  Result.Sl := Max(0, BestCandidate.X);
+  Result.HeadingChange := Max(0, Evaluation.HeadingChange);
+  Result.CurveLength := Max(0, Evaluation.CurveLength);
+  Result.Error := Evaluation.Score;
+  if RearAligned and BodyAligned then
+    Result.Reason := 'converged'
   else
-    Result.TerminalPose := Default(TVehiclePose);
-  Result.FinalPose := Result.TerminalPose;
-  Result.Passes := Trace;
+    Result.Reason := 'alignment-mismatch';
+  Result.InitialSl := StartSl;
+  Result.MaxSpan := MaxSpan;
+  Result.Geometry := Evaluation.Geometry;
+  Result.Intersection := Evaluation.Intersection;
+  Result.Cor := Evaluation.Cor;
+  Result.Evaluation := Evaluation;
+  Result.Inner := SolveVehicleHeadingChangeForBisectorAlignment(Result.Sl, VehicleVector, Geometry);
+  Result.Iterations := Passes * SampleCount;
+  Result.Value := Evaluation.Score;
+  Result.RearDistance := Evaluation.RearDistance;
+  Result.BodyAlignment := Evaluation.BodyAlignment;
+  Result.BodyAngleError := Evaluation.BodyAngleError;
+end;
 
-  ShadowCountSafe := ShadowCount;
-  if ShadowCountSafe < 2 then
-    ShadowCountSafe := 2;
-  if ShadowCountSafe > 64 then
-    ShadowCountSafe := 64;
-  Result.ShadowCount := ShadowCountSafe;
-  // The caller can use ShadowCountSafe with BuildVehicleSweepFromTerminalSl-style logic
-  // if it wants to render a fading copy sweep.
+function SolveVehicleSlForBisectorAlignment(
+  const VehicleVector: TVehicleVector;
+  const Geometry: TArcGeometry
+): TSimpleArcSolution;
+begin
+  Result := SolveVehicleSlForBisectorAlignment(VehicleVector, Geometry, DefaultSolverOptions);
+end;
+
+function SolveSimpleArc(
+  const Radius, HeadingChange, InitialSl: Double;
+  const VehicleVector: TVehicleVector
+): TSimpleArcSolution;
+var
+  Geometry: TArcGeometry;
+  Options: TSolverOptions;
+begin
+  Geometry := MakeGeometry(Radius, HeadingChange, 100);
+  Options := DefaultSolverOptions;
+  Options.InitialSl := InitialSl;
+  Result := SolveVehicleSlForBisectorAlignment(VehicleVector, Geometry, Options);
 end;
 
 end.

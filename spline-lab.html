@@ -3436,7 +3436,95 @@
       const persist = options.persist !== false;
       const render = options.render !== false;
       const activeVehicle = getActiveVehicle();
-      const result = solveSimpleArc();
+      const arc = getSimpleArcGeometry();
+      const vehicleVector = getVehicleVector();
+      const geometry = {
+        ...getVehicleGeometry(),
+        radius: Number(arc.radius) || 0,
+        headingChange: Number(arc.turnAngle) || 0
+      };
+      const solved = solveVehicleSlForBisectorAlignment(vehicleVector, {
+        initialSl: getSolverInitialSl(activeVehicle?.sl),
+        maxSpan: Number.isFinite(Number(geometry?.maxHeadingChange))
+          ? Math.abs(Number(geometry.maxHeadingChange))
+          : 128,
+        geometry
+      });
+      const evaluation = solved?.evaluation || null;
+      const terminalPose = evaluation?.endPose || null;
+      const vc = evaluation?.cor || evaluation?.intersection || null;
+      const bisector = getSimpleArcBisectorGeometry(arc);
+      const terminalPoseForCurve = terminalPose ? {
+        x: Number(terminalPose.x) || 0,
+        y: Number(terminalPose.y) || 0,
+        angle: Number(terminalPose.angle) || 0,
+        theta: Number(solved?.sl) || 0
+      } : null;
+      const simpleCurve = buildSimpleCurveGeometry({
+        terminalPose: terminalPoseForCurve,
+        vc,
+        bisector
+      });
+      const finalPose = simpleCurve?.endPose || terminalPoseForCurve || null;
+      const positionError = Number(solved?.rearDistance);
+      const headingError = Number.isFinite(Number(solved?.bodyAngleError))
+        ? Math.abs(Number(solved.bodyAngleError))
+        : (Number.isFinite(Number(solved?.bodyAlignment))
+          ? Math.abs(Math.asin(clamp(Number(solved.bodyAlignment) || 0, -1, 1)))
+          : NaN);
+      const headingNormalAngle = finalPose ? normalizePositiveAngle(Number(finalPose.angle) + Math.PI / 2) : NaN;
+      const bisectorHeading = bisector?.valid ? normalizePositiveAngle(bisector.bisectorAngle) : NaN;
+      const headingNormalError = Number.isFinite(headingNormalAngle) && Number.isFinite(bisectorHeading)
+        ? Math.max(0, headingNormalAngle - bisectorHeading)
+        : NaN;
+      const success = Boolean(solved?.success)
+        && Number.isFinite(positionError)
+        && Number.isFinite(headingError)
+        && Math.abs(positionError) <= 1e-7
+        && headingError <= 1e-6;
+      const result = {
+        success,
+        edgeCase: false,
+        edgeCaseReason: null,
+        radius: Number(arc.radius) || 0,
+        arcLength: Number(arc.arcLength) || 0,
+        s: Number(solved?.curveLength) || 0,
+        sl: Number(solved?.sl) || 0,
+        turnAngle: Number(solved?.headingChange) || 0,
+        finalHeading: Number(finalPose?.angle) || 0,
+        curveLength: Number(solved?.curveLength) || 0,
+        complexCurveLength: Number(solved?.curveLength) || 0,
+        simpleCurveLength: Number(simpleCurve?.arcLength) || 0,
+        totalTravelDistance: (Number(solved?.curveLength) || 0) + (Number(simpleCurve?.arcLength) || 0),
+        spTravelDistance: Number(solved?.curveLength) || 0,
+        positionError: Number.isFinite(positionError) ? Math.abs(positionError) : NaN,
+        headingError,
+        headingNormalAngle,
+        headingNormalError,
+        headingNormalSatisfied: Number.isFinite(headingNormalError) && headingNormalError <= 1e-5,
+        vc,
+        terminalPose: finalPose,
+        finalPose,
+        terminalCoord: finalPose ? createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, "Rp", "#7dd3fc") : null,
+        complexCurve: {
+          valid: Boolean(arc?.valid),
+          center: { ...arc.center },
+          radius: Number(arc.radius) || 0,
+          startAngle: Number(arc.startAngle) || 0,
+          endAngle: Number(arc.endAngle) || 0,
+          turnAngle: Number(arc.turnAngle) || 0,
+          arcLength: Number(arc.arcLength) || 0,
+          pathPoints: sampleSimpleArcPoints(arc),
+          terminalPose: finalPose,
+          vc,
+          bisector
+        },
+        simpleCurve,
+        pathPoints: Array.isArray(simpleCurve?.pathPoints) ? simpleCurve.pathPoints : [],
+        bisector,
+        steerMax: Number(arc.steerMax) || 0,
+        passes: solved?.evaluation ? [solved.evaluation] : []
+      };
       state.simpleArcSolution = result;
       state.arc.deltaPsi = getSimpleArcDeltaPsi();
       state.arc.angle = state.arc.deltaPsi;

@@ -1,4 +1,4 @@
-unit VehiclePoseSolver;
+unit PoseSolver;
 
 interface
 
@@ -16,9 +16,20 @@ type
     CurveLength: Double;
   end;
 
+function MakeVehiclePose(
+  const X, Y, Angle, Theta, Radius, CurveLength: Double
+): TVehiclePose;
+
+function IntegrateVehiclePoseForSlew(const Slew, Distance: Double): TVehiclePose;
+
+function SampleVehiclePoseForSlew(
+  const BasePose: TVehiclePose;
+  const Distance, Slew, CurveLength, Radius: Double
+): TVehiclePose; overload;
+
 function SampleVehiclePoseForSlew(
   const BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius: Double
-): TVehiclePose;
+): TVehiclePose; overload;
 
 function IntegrateVehiclePoseFrontForSlew(const Slew, Distance: Double): TVehiclePose;
 function IntegrateVehiclePoseFallbackForSlew(const Slew, Distance: Double): TVehiclePose;
@@ -31,9 +42,9 @@ type
     Im: Double;
   end;
 
-function IntegrateVehiclePoseFallbackForSlew(const Slew, Distance: Double): TVehiclePose; forward;
-
 const
+  SlewFallbackThreshold = 0.001;
+
   QuadratureNodes: array[0..7] of Double = (
     -0.9602898564975363,
     -0.7966664774136267,
@@ -63,6 +74,18 @@ begin
     Result := AMin
   else if Result > AMax then
     Result := AMax;
+end;
+
+function MakeVehiclePose(
+  const X, Y, Angle, Theta, Radius, CurveLength: Double
+): TVehiclePose;
+begin
+  Result.X := X;
+  Result.Y := Y;
+  Result.Angle := Angle;
+  Result.Theta := Theta;
+  Result.Radius := Radius;
+  Result.CurveLength := CurveLength;
 end;
 
 function ComplexAdd(const A, B: TComplex): TComplex;
@@ -168,7 +191,7 @@ var
   InvSlew, Phase, Travel, PhaseSpan: Double;
   HarmonicLimit, M, BesselOrder: Integer;
   BesselValues: TArray<Double>;
-  Integral, Harmonic, Term, BesselTermC: TComplex;
+  Integral, Harmonic, Term, BesselTermC, FrontVector: TComplex;
   BesselValue, BesselTerm: Double;
   BodyVector, LocalRear: TComplex;
 begin
@@ -214,14 +237,18 @@ begin
   end;
 
   Integral := ComplexScale(Integral, 1 / Slew);
-  Result := ComplexMul(ComplexExp(Phase), Integral);
+  FrontVector := ComplexMul(ComplexExp(Phase), Integral);
 
   BodyVector := ComplexExp((2 * Sqr(Sin(PhaseSpan / 2))) / Slew);
-  LocalRear.Re := 1 + Result.Re - BodyVector.Re;
-  LocalRear.Im := Result.Im - BodyVector.Im;
+  LocalRear.Re := 1 + FrontVector.Re - BodyVector.Re;
+  LocalRear.Im := FrontVector.Im - BodyVector.Im;
 
-  Result.Re := LocalRear.Re;
-  Result.Im := LocalRear.Im;
+  Result.X := LocalRear.Re;
+  Result.Y := LocalRear.Im;
+  Result.Angle := (2 * Sqr(Sin(PhaseSpan / 2))) / Slew;
+  Result.Theta := Slew * Travel;
+  Result.Radius := 0;
+  Result.CurveLength := 0;
 end;
 
 function IntegrateVehiclePoseFallbackForSlew(const Slew, Distance: Double): TVehiclePose;
@@ -260,6 +287,31 @@ begin
   Result.CurveLength := 0;
 end;
 
+function IntegrateVehiclePoseForSlew(const Slew, Distance: Double): TVehiclePose;
+begin
+  // Small slew values are numerically safer with the quadrature path.
+  if Abs(Slew) < SlewFallbackThreshold then
+    Result := IntegrateVehiclePoseFallbackForSlew(Slew, Distance)
+  else
+    Result := IntegrateVehiclePoseFrontForSlew(Slew, Distance);
+end;
+
+function SampleVehiclePoseForSlew(
+  const BasePose: TVehiclePose;
+  const Distance, Slew, CurveLength, Radius: Double
+): TVehiclePose;
+begin
+  Result := SampleVehiclePoseForSlew(
+    BasePose.X,
+    BasePose.Y,
+    BasePose.Angle,
+    Distance,
+    Slew,
+    CurveLength,
+    Radius
+  );
+end;
+
 function SampleVehiclePoseForSlew(
   const BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius: Double
 ): TVehiclePose;
@@ -267,20 +319,19 @@ var
   LocalPose: TVehiclePose;
   CosBase, SinBase: Double;
 begin
-  if Abs(Slew) < 0.001 then
-    LocalPose := IntegrateVehiclePoseFallbackForSlew(Slew, Distance)
-  else
-    LocalPose := IntegrateVehiclePoseFrontForSlew(Slew, Distance);
+  LocalPose := IntegrateVehiclePoseForSlew(Slew, Distance);
 
   CosBase := Cos(BaseAngle);
   SinBase := Sin(BaseAngle);
 
-  Result.X := BaseX + LocalPose.X * CosBase - LocalPose.Y * SinBase;
-  Result.Y := BaseY + LocalPose.X * SinBase + LocalPose.Y * CosBase;
-  Result.Angle := BaseAngle + LocalPose.Angle;
-  Result.Theta := LocalPose.Theta;
-  Result.Radius := Radius;
-  Result.CurveLength := CurveLength;
+  Result := MakeVehiclePose(
+    BaseX + LocalPose.X * CosBase - LocalPose.Y * SinBase,
+    BaseY + LocalPose.X * SinBase + LocalPose.Y * CosBase,
+    BaseAngle + LocalPose.Angle,
+    LocalPose.Theta,
+    Radius,
+    CurveLength
+  );
 end;
 
 end.
