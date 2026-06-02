@@ -285,7 +285,7 @@
           <div class="controls">
             <div class="control">
               <label for="arcRadius">Radius</label>
-              <input id="arcRadius" type="number" min="-100" max="100" step="0.01" value="1.00" />
+              <input id="arcRadius" type="number" min="-100" max="100" step="0.001" value="1.000" inputmode="decimal" />
             </div>
             <div class="control">
               <label for="arcAngle">Angle Size</label>
@@ -293,7 +293,7 @@
             </div>
             <div class="control">
               <label for="arcSteerMax">Steer Max (SM)</label>
-              <input id="arcSteerMax" type="number" min="45" max="90" step="1" value="90" inputmode="numeric" />
+              <input id="arcSteerMax" type="number" min="45" max="90" step="1" value="90.00" inputmode="decimal" />
             </div>
             <div class="control">
               <label for="arcShadowCount">Shadows (m)</label>
@@ -1912,10 +1912,6 @@
       return radius * getSimpleArcDeltaPsi(arc);
     }
 
-    function normalizeSteerMaxDegrees(degrees) {
-      return clamp(Math.round(Number(degrees) || 0), 45, 90);
-    }
-
     function normalizeSteerMax(rad) {
       return degToRad(normalizeSteerMaxDegrees(radToDeg(Number(rad) || 0)));
     }
@@ -1932,6 +1928,7 @@
       const radius = Number(state.arc?.radius) || 1;
       const deltaPsi = getSimpleArcDeltaPsi();
       const arcLength = getSimpleArcLength();
+      const steerMax = getSimpleArcSteerMax();
       const center = { x: 0, y: radius };
       const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
       const turnAngle = Number.isFinite(radius) && Math.abs(radius) > 1e-9
@@ -1941,6 +1938,7 @@
         radius,
         deltaPsi,
         arcLength,
+        steerMax,
         turnAngle,
         center,
         startAngle,
@@ -1991,6 +1989,12 @@
       let wrapped = Number(angle) || 0;
       while (wrapped > Math.PI) wrapped -= Math.PI * 2;
       while (wrapped < -Math.PI) wrapped += Math.PI * 2;
+      return wrapped;
+    }
+
+    function normalizePositiveAngle(angle) {
+      let wrapped = wrapAngle(angle);
+      if (wrapped < 0) wrapped += Math.PI * 2;
       return wrapped;
     }
 
@@ -2050,6 +2054,9 @@
           finalHeading: 0,
           positionError: NaN,
           headingError: NaN,
+          headingNormalAngle: NaN,
+          headingNormalError: NaN,
+          headingNormalSatisfied: false,
           terminalPose: null,
           terminalCoord: null,
           spTravelDistance: 0,
@@ -2071,42 +2078,144 @@
         8
       );
       const steerMaxRad = Math.max(degToRad(45), Math.min(getSimpleArcSteerMax(arc), degToRad(90)));
-      const maxSteer = Math.min(steerMaxRad, Math.PI / 2 - 0.01);
+      const maxSteer = Math.min(steerMaxRad, Math.PI / 2 - 1e-9);
       const steerMin = turnDirection >= 0 ? 0 : -maxSteer;
       const steerMax = turnDirection >= 0 ? maxSteer : 0;
       const positionTolerance = 1e-5;
       const headingTolerance = 1e-5;
-      const scoreCandidate = (finalSteer, pathLength) => {
+      const headingNormalTolerance = 1e-5;
+      const headingSatisfied = (candidate) => (
+        (Boolean(candidate?.steerAtLimit) || Number(candidate?.headingError) <= headingTolerance)
+        && Boolean(candidate?.headingNormalSatisfied)
+      );
+      const getSimpleArcVC = (terminalPose) => {
+        if (!terminalPose) return null;
+        const rear = {
+          x: Number(terminalPose.x) || 0,
+          y: Number(terminalPose.y) || 0
+        };
+        const bodyAngle = Number(terminalPose.angle) || 0;
+        const front = {
+          x: rear.x + Math.cos(bodyAngle),
+          y: rear.y + Math.sin(bodyAngle)
+        };
+        const steerAngle = bodyAngle + (Number(terminalPose.theta) || 0);
+        return getVehiclePerpendicularIntersection(rear, bodyAngle, front, steerAngle);
+      };
+      const evaluateCandidate = (finalSteer, pathLength) => {
         const steerAtLimit = Math.abs(Number(finalSteer) || 0) >= maxSteer - 1e-6;
         const effectiveSteer = steerAtLimit ? maxSteer : Number(finalSteer) || 0;
         const result = integrateLinearSteerPath(effectiveSteer, pathLength);
         const terminalPose = result.terminalPose || {};
-        const positionError = Math.abs(signedDistanceToLine(terminalPose, bisector.center, bisector.bisectorDir));
-        const headingError = angleDistanceToPerpendicular(Number(terminalPose.angle) || 0, bisector.bisectorAngle);
-        const distanceScale = Math.max(
-          1,
-          Math.abs(Number(bisector.center?.x) || 0),
-          Math.abs(Number(bisector.center?.y) || 0),
-          Math.abs(Number(bisector.bisectorPoint?.x) || 0),
-          Math.abs(Number(bisector.bisectorPoint?.y) || 0),
-          Math.abs(Number(arc.radius) || 0),
-          Math.abs(Number(arc.arcLength) || 0)
-        );
-        const positionScore = (positionError / distanceScale) ** 2;
-        const headingScore = headingError ** 2;
+        const vc = getSimpleArcVC(terminalPose) || terminalPose;
+        const signedPositionError = signedDistanceToLine(vc, bisector.center, bisector.bisectorDir);
+        const positionError = Math.abs(signedPositionError);
+        const terminalHeading = Number(terminalPose.angle) || 0;
+        const headingError = angleDistanceToPerpendicular(terminalHeading, bisector.bisectorAngle);
+        const headingNormalAngle = normalizePositiveAngle(terminalHeading + Math.PI / 2);
+        const bisectorHeading = normalizePositiveAngle(bisector.bisectorAngle);
+        const headingNormalError = Math.max(0, headingNormalAngle - bisectorHeading);
+        const headingNormalSatisfied = headingNormalError <= headingNormalTolerance;
         return {
-          score: steerAtLimit ? positionScore : positionScore + headingScore,
           result,
           positionError,
           headingError,
-          steerAtLimit
+          headingNormalAngle,
+          headingNormalError,
+          headingNormalSatisfied,
+          steerAtLimit,
+          vc
+        };
+      };
+
+      const isBetterOverallCandidate = (candidate, currentBest) => {
+        if (!candidate) return false;
+        if (!currentBest) return true;
+        if (candidate.headingNormalSatisfied !== currentBest.headingNormalSatisfied) {
+          return Boolean(candidate.headingNormalSatisfied);
+        }
+        if (candidate.positionError < currentBest.positionError - 1e-12) return true;
+        if (candidate.positionError > currentBest.positionError + 1e-12) return false;
+        if (candidate.headingError < currentBest.headingError - 1e-12) return true;
+        if (candidate.headingError > currentBest.headingError + 1e-12) return false;
+        return false;
+      };
+
+      const searchPathCandidates = (fixedSteer, center, span, samples, floor) => {
+        const pathSamples = Math.max(5, Number(samples) || 9);
+        const pathFloor = Math.max(1e-6, Number(floor) || 0);
+        const pathMin = Math.max(1e-9, pathFloor);
+        const pathLeft = clamp(center - span, pathMin, maxPathLength);
+        const pathRight = clamp(center + span, pathMin, maxPathLength);
+        let bestCandidate = null;
+
+        for (let j = 0; j < pathSamples; j += 1) {
+          const pathT = pathSamples === 1 ? 0 : j / (pathSamples - 1);
+          const pathLength = pathLeft + (pathRight - pathLeft) * pathT;
+          const scored = evaluateCandidate(fixedSteer, pathLength);
+          const candidate = {
+            finalSteer: Number(fixedSteer) || 0,
+            pathLength,
+            ...scored
+          };
+          if (!bestCandidate
+            || candidate.headingNormalSatisfied !== bestCandidate.headingNormalSatisfied && Boolean(candidate.headingNormalSatisfied)
+            || (candidate.headingNormalSatisfied === bestCandidate.headingNormalSatisfied
+              && candidate.positionError < bestCandidate.positionError - 1e-12)
+            || (candidate.headingNormalSatisfied === bestCandidate.headingNormalSatisfied
+              && Math.abs(candidate.positionError - bestCandidate.positionError) <= 1e-12
+              && candidate.headingError < bestCandidate.headingError - 1e-12)) {
+            bestCandidate = candidate;
+          }
+        }
+
+        return {
+          best: bestCandidate,
+          pathLeft,
+          pathRight,
+          pathSpan: Math.max((pathRight - pathLeft) * 0.25, pathFloor)
+        };
+      };
+
+      const searchSteerCandidates = (fixedPathLength, center, span, samples, floor) => {
+        const steerSamples = Math.max(5, Number(samples) || 9);
+        const steerFloor = Math.max(1e-6, Number(floor) || 0);
+        const steerLeft = clamp(center - span, steerMin, steerMax);
+        const steerRight = clamp(center + span, steerMin, steerMax);
+        let bestCandidate = null;
+
+        for (let i = 0; i < steerSamples; i += 1) {
+          const steerT = steerSamples === 1 ? 0 : i / (steerSamples - 1);
+          const finalSteer = steerLeft + (steerRight - steerLeft) * steerT;
+          const scored = evaluateCandidate(finalSteer, fixedPathLength);
+          const candidate = {
+            finalSteer,
+            pathLength: Number(fixedPathLength) || 0,
+            ...scored
+          };
+          if (!bestCandidate
+            || candidate.headingNormalSatisfied !== bestCandidate.headingNormalSatisfied && Boolean(candidate.headingNormalSatisfied)
+            || (candidate.headingNormalSatisfied === bestCandidate.headingNormalSatisfied
+              && candidate.headingError < bestCandidate.headingError - 1e-12)
+            || (candidate.headingNormalSatisfied === bestCandidate.headingNormalSatisfied
+              && Math.abs(candidate.headingError - bestCandidate.headingError) <= 1e-12
+              && candidate.positionError < bestCandidate.positionError - 1e-12)) {
+            bestCandidate = candidate;
+          }
+        }
+
+        return {
+          best: bestCandidate,
+          steerLeft,
+          steerRight,
+          steerSpan: Math.max((steerRight - steerLeft) * 0.25, steerFloor)
         };
       };
 
       const trace = [];
       let best = null;
       let steerCenter = clamp(initialSteer, steerMin, steerMax);
-      let pathCenter = clamp(initialPathLength, 0.05, maxPathLength);
+      let pathCenter = clamp(initialPathLength, 1e-9, maxPathLength);
       let steerSpan = Math.max(Math.PI / 6, Math.abs(initialSteer) * 0.75 + Math.PI / 12);
       let pathSpan = Math.max(Math.abs(initialPathLength) * 0.75, Math.abs(Number(arc.arcLength) || 0), 0.75);
 
@@ -2119,33 +2228,20 @@
         const pathFloor = Math.max(1e-6, Number(stage?.pathFloor) || 0);
 
         for (let pass = 0; pass < passCount; pass += 1) {
-          const steerLeft = clamp(steerCenter - steerSpan, steerMin, steerMax);
-          const steerRight = clamp(steerCenter + steerSpan, steerMin, steerMax);
-          const pathLeft = clamp(pathCenter - pathSpan, 0.05, maxPathLength);
-          const pathRight = clamp(pathCenter + pathSpan, 0.05, maxPathLength);
-          let passBest = null;
+          const pathSearch = searchPathCandidates(steerCenter, pathCenter, pathSpan, pathSamples, pathFloor);
+          const pathBest = pathSearch.best;
+          if (pathBest) {
+            pathCenter = pathBest.pathLength;
+            pathSpan = Math.max((pathSearch.pathRight - pathSearch.pathLeft) * shrink, pathFloor);
+          }
 
-          for (let i = 0; i < steerSamples; i += 1) {
-            const steerT = steerSamples === 1 ? 0 : i / (steerSamples - 1);
-            const finalSteer = steerLeft + (steerRight - steerLeft) * steerT;
-            for (let j = 0; j < pathSamples; j += 1) {
-              const pathT = pathSamples === 1 ? 0 : j / (pathSamples - 1);
-              const pathLength = pathLeft + (pathRight - pathLeft) * pathT;
-              const scored = scoreCandidate(finalSteer, pathLength);
-              if (!best || scored.score < best.score) {
-                best = {
-                  finalSteer,
-                  pathLength,
-                  ...scored
-                };
-              }
-              if (!passBest || scored.score < passBest.score) {
-                passBest = {
-                  finalSteer,
-                  pathLength,
-                  ...scored
-                };
-              }
+          const steerSearch = searchSteerCandidates(pathCenter, steerCenter, steerSpan, steerSamples, steerFloor);
+          const steerBest = steerSearch.best;
+          if (steerBest) {
+            steerCenter = steerBest.finalSteer;
+            steerSpan = Math.max((steerSearch.steerRight - steerSearch.steerLeft) * shrink, steerFloor);
+            if (isBetterOverallCandidate(steerBest, best)) {
+              best = steerBest;
             }
           }
 
@@ -2155,28 +2251,28 @@
             pathCenter,
             steerSpan,
             pathSpan,
-            steerLeft,
-            steerRight,
-            pathLeft,
-            pathRight,
-            best: passBest ? {
-              finalSteer: passBest.finalSteer,
-              pathLength: passBest.pathLength,
-              positionError: passBest.positionError,
-              headingError: passBest.headingError,
-              score: passBest.score
+            pathBest: pathBest ? {
+              finalSteer: pathBest.finalSteer,
+              pathLength: pathBest.pathLength,
+              positionError: pathBest.positionError,
+              headingError: pathBest.headingError,
+              headingNormalError: pathBest.headingNormalError,
+              headingNormalSatisfied: pathBest.headingNormalSatisfied
+            } : null,
+            steerBest: steerBest ? {
+              finalSteer: steerBest.finalSteer,
+              pathLength: steerBest.pathLength,
+              positionError: steerBest.positionError,
+              headingError: steerBest.headingError,
+              headingNormalError: steerBest.headingNormalError,
+              headingNormalSatisfied: steerBest.headingNormalSatisfied
             } : null
           });
 
           if (!best) break;
-          if (best.positionError <= positionTolerance && best.headingError <= headingTolerance) {
+          if (best.positionError <= positionTolerance && headingSatisfied(best)) {
             break;
           }
-
-          steerCenter = best.finalSteer;
-          pathCenter = best.pathLength;
-          steerSpan = Math.max((steerRight - steerLeft) * shrink, steerFloor);
-          pathSpan = Math.max((pathRight - pathLeft) * shrink, pathFloor);
         }
       };
 
@@ -2189,7 +2285,7 @@
         pathFloor: 1e-3
       });
 
-      if (!best || best.positionError > positionTolerance || best.headingError > headingTolerance) {
+      if (!best || best.positionError > positionTolerance || !headingSatisfied(best)) {
         runStage({
           passes: 10,
           steerSamples: 21,
@@ -2213,15 +2309,21 @@
           positionError: NaN,
           headingError: NaN,
           terminalPose: null,
+          finalPose: null,
           terminalCoord: null,
           spTravelDistance: 0,
+          complexCurveLength: 0,
+          simpleCurveLength: 0,
+          totalTravelDistance: 0,
           pathPoints: [],
+          simpleCurve: null,
+          complexCurve: null,
           passes: trace
         };
       }
 
       const steerLimitHit = Math.abs(Number(best.finalSteer) || 0) >= maxSteer - 1e-6;
-      const edgeCase = Boolean(steerLimitHit && (best.positionError > positionTolerance || best.headingError > headingTolerance));
+      const edgeCase = Boolean(steerLimitHit && best.positionError > positionTolerance);
       const pathPoints = best.result.points;
       const spTravelDistance = Number(best.pathLength) || 0;
       const terminalPose = {
@@ -2233,8 +2335,22 @@
         radius: Number(arc.radius) || 0,
         curveLength: Number(best.pathLength) || 0
       };
+      const vc = best.vc || getSimpleArcVC(terminalPose) || null;
+      const simpleCurve = buildSimpleCurveGeometry({
+        ...best.result,
+        terminalPose,
+        vc,
+        bisector: best.result?.bisector || bisector
+      });
+      const complexCurveLength = Number(best.pathLength) || 0;
+      const simpleCurveLength = Number(simpleCurve?.arcLength) || 0;
+      const totalTravelDistance = complexCurveLength + simpleCurveLength;
+      const finalPose = simpleCurve?.endPose || terminalPose;
       return {
-        success: !edgeCase && Number.isFinite(best.score),
+        success: Number.isFinite(best.positionError)
+          && Number.isFinite(best.headingError)
+          && best.positionError <= positionTolerance
+          && headingSatisfied(best),
         edgeCase,
         edgeCaseReason: edgeCase ? "steer-max-reached-before-bisector" : null,
         radius: Number(arc.radius) || 0,
@@ -2244,11 +2360,33 @@
         turnAngle: Number(best.finalSteer) || 0,
         finalHeading: Number(best.result.terminalPose.angle) || 0,
         curveLength: Number(best.pathLength) || 0,
-        spTravelDistance,
+        complexCurveLength,
+        simpleCurveLength,
+        totalTravelDistance,
+        spTravelDistance: totalTravelDistance,
         positionError: Number(best.positionError) || 0,
         headingError: Number(best.headingError) || 0,
+        headingNormalAngle: Number(best.headingNormalAngle) || 0,
+        headingNormalError: Number(best.headingNormalError) || 0,
+        headingNormalSatisfied: Boolean(best.headingNormalSatisfied),
+        vc,
         terminalPose,
-        terminalCoord: createCoord(terminalPose.x, terminalPose.y, terminalPose.angle, 1, "Rp", "#7dd3fc"),
+        finalPose,
+        terminalCoord: createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, "Rp", "#7dd3fc"),
+        complexCurve: {
+          valid: true,
+          center: { ...arc.center },
+          radius: Number(arc.radius) || 0,
+          startAngle: Number(arc.startAngle) || 0,
+          endAngle: Number(arc.endAngle) || 0,
+          turnAngle: Number(arc.turnAngle) || 0,
+          arcLength: Number(arc.arcLength) || 0,
+          pathPoints: best.result.points || [],
+          terminalPose,
+          vc,
+          bisector
+        },
+        simpleCurve,
         pathPoints,
         bisector,
         steerMax: maxSteer,
@@ -2272,6 +2410,193 @@
       return points;
     }
 
+    function getCircleLineIntersections(center, radius, lineOrigin, lineDirection) {
+      const directionLength = Math.hypot(Number(lineDirection?.x) || 0, Number(lineDirection?.y) || 0);
+      if (directionLength <= 1e-12) return [];
+      const direction = {
+        x: Number(lineDirection.x) / directionLength,
+        y: Number(lineDirection.y) / directionLength
+      };
+      const ox = Number(lineOrigin?.x) || 0;
+      const oy = Number(lineOrigin?.y) || 0;
+      const cx = Number(center?.x) || 0;
+      const cy = Number(center?.y) || 0;
+      const fx = ox - cx;
+      const fy = oy - cy;
+      const projection = fx * direction.x + fy * direction.y;
+      const perpSq = fx * fx + fy * fy - projection * projection;
+      const radiusSq = Math.max(0, Number(radius) || 0) ** 2;
+      if (perpSq > radiusSq + 1e-9) return [];
+      const offset = Math.sqrt(Math.max(0, radiusSq - perpSq));
+      const tValues = offset <= 1e-12
+        ? [-projection]
+        : [-projection - offset, -projection + offset];
+      return tValues.map((t) => ({
+        x: ox + direction.x * t,
+        y: oy + direction.y * t,
+        t
+      })).sort((a, b) => a.t - b.t);
+    }
+
+    function sampleCircularArcPoints(center, radius, startAngle, turnAngle, sampleCount = Math.max(24, Math.ceil(Math.abs(Number(turnAngle) || 0) * 48))) {
+      const points = [];
+      const count = Math.max(2, sampleCount);
+      const safeRadius = Math.abs(Number(radius) || 0);
+      const origin = {
+        x: Number(center?.x) || 0,
+        y: Number(center?.y) || 0
+      };
+      const start = Number(startAngle) || 0;
+      const delta = Number(turnAngle) || 0;
+      for (let i = 0; i <= count; i += 1) {
+        const t = count === 0 ? 0 : i / count;
+        const theta = start + delta * t;
+        points.push({
+          x: origin.x + Math.cos(theta) * safeRadius,
+          y: origin.y + Math.sin(theta) * safeRadius
+        });
+      }
+      return points;
+    }
+
+    function buildSimpleCurveGeometry(solution = state.simpleArcSolution || solveSimpleArc()) {
+      const terminalPose = solution?.terminalPose || null;
+      const vc = solution?.vc || null;
+      const bisector = solution?.bisector || null;
+      if (!terminalPose || !vc || !bisector?.valid) {
+        return {
+          valid: false,
+          center: null,
+          radius: 0,
+          startPoint: null,
+          endPoint: null,
+          startAngle: 0,
+          endAngle: 0,
+          turnAngle: 0,
+          arcLength: 0,
+          pathPoints: [],
+          startPose: terminalPose,
+          endPose: null,
+          bisectorPoint: null,
+          bisector
+        };
+      }
+
+      const center = {
+        x: Number(vc.x) || 0,
+        y: Number(vc.y) || 0
+      };
+      const startPoint = {
+        x: Number(terminalPose.x) || 0,
+        y: Number(terminalPose.y) || 0
+      };
+      const radius = Math.hypot(startPoint.x - center.x, startPoint.y - center.y);
+      if (!Number.isFinite(radius) || radius <= 1e-9) {
+        return {
+          valid: false,
+          center,
+          radius: 0,
+          startPoint,
+          endPoint: null,
+          startAngle: 0,
+          endAngle: 0,
+          turnAngle: 0,
+          arcLength: 0,
+          pathPoints: [],
+          startPose: terminalPose,
+          endPose: null,
+          bisectorPoint: null,
+          bisector
+        };
+      }
+
+      const intersections = getCircleLineIntersections(center, radius, bisector.center, bisector.bisectorDir);
+      if (!intersections.length) {
+        return {
+          valid: false,
+          center,
+          radius,
+          startPoint,
+          endPoint: null,
+          startAngle: 0,
+          endAngle: 0,
+          turnAngle: 0,
+          arcLength: 0,
+          pathPoints: [],
+          startPose: terminalPose,
+          endPose: null,
+          bisectorPoint: null,
+          bisector
+        };
+      }
+
+      const startAngle = Math.atan2(startPoint.y - center.y, startPoint.x - center.x);
+      const candidates = intersections.map((point) => {
+        const endAngle = Math.atan2(point.y - center.y, point.x - center.x);
+        const turnAngle = wrapAngle(endAngle - startAngle);
+        return {
+          point,
+          endAngle,
+          turnAngle,
+          arcLength: Math.abs(turnAngle) * radius
+        };
+      });
+      candidates.sort((a, b) => {
+        if (a.arcLength < b.arcLength - 1e-12) return -1;
+        if (a.arcLength > b.arcLength + 1e-12) return 1;
+        if (Math.abs(a.turnAngle) < Math.abs(b.turnAngle) - 1e-12) return -1;
+        if (Math.abs(a.turnAngle) > Math.abs(b.turnAngle) + 1e-12) return 1;
+        return a.point.t - b.point.t;
+      });
+
+      const chosen = candidates[0];
+      const sampleCount = Math.max(12, Math.ceil(Math.abs(chosen.turnAngle) * 48));
+      const pathPoints = sampleCircularArcPoints(center, radius, startAngle, chosen.turnAngle, sampleCount);
+      const endPoint = pathPoints[pathPoints.length - 1] || chosen.point;
+      const endAngle = startAngle + chosen.turnAngle;
+      const endHeading = chosen.turnAngle >= 0 ? endAngle + Math.PI / 2 : endAngle - Math.PI / 2;
+
+      return {
+        valid: true,
+        center,
+        radius,
+        startPoint,
+        endPoint,
+        startAngle,
+        endAngle,
+        turnAngle: chosen.turnAngle,
+        arcLength: Math.abs(chosen.turnAngle) * radius,
+        pathPoints,
+        startPose: {
+          x: startPoint.x,
+          y: startPoint.y,
+          angle: Number(terminalPose.angle) || 0,
+          theta: Number(terminalPose.theta) || 0
+        },
+        endPose: {
+          x: endPoint.x,
+          y: endPoint.y,
+          angle: endHeading,
+          heading: endHeading,
+          theta: Number(terminalPose.theta) || 0
+        },
+        bisectorPoint: chosen.point,
+        bisector
+      };
+    }
+
+    function getSimpleCurvePathTraces(solution = state.simpleArcSolution || solveSimpleArc()) {
+      const simpleCurve = solution?.simpleCurve || null;
+      const pathPoints = Array.isArray(simpleCurve?.pathPoints) ? simpleCurve.pathPoints : [];
+      return {
+        pathPoints,
+        worldPoints: pathPoints.map(point => ({
+          x: Number(point.x) || 0,
+          y: Number(point.y) || 0
+        }))
+      };
+    }
+
     function getSimpleArcBisectorPoint(arc = getSimpleArcGeometry()) {
       if (!arc?.valid) return null;
       const bisectorAngle = arc.startAngle + arc.turnAngle / 2;
@@ -2280,6 +2605,49 @@
         x: arc.center.x + Math.cos(bisectorAngle) * radius,
         y: arc.center.y + Math.sin(bisectorAngle) * radius
       };
+    }
+
+    function extendRayToCanvasEdge(start, through) {
+      const rect = canvas.getBoundingClientRect();
+      const dx = Number(through?.x) - Number(start?.x);
+      const dy = Number(through?.y) - Number(start?.y);
+      const candidates = [];
+      const eps = 1e-9;
+
+      if (Math.abs(dx) > eps) {
+        const tRight = (rect.width - Number(start?.x)) / dx;
+        const yRight = Number(start?.y) + dy * tRight;
+        if (tRight > 0 && yRight >= 0 && yRight <= rect.height) {
+          candidates.push({ t: tRight, x: rect.width, y: yRight, edge: "right" });
+        }
+        const tLeft = (0 - Number(start?.x)) / dx;
+        const yLeft = Number(start?.y) + dy * tLeft;
+        if (tLeft > 0 && yLeft >= 0 && yLeft <= rect.height) {
+          candidates.push({ t: tLeft, x: 0, y: yLeft, edge: "left" });
+        }
+      }
+
+      if (Math.abs(dy) > eps) {
+        const tBottom = (rect.height - Number(start?.y)) / dy;
+        const xBottom = Number(start?.x) + dx * tBottom;
+        if (tBottom > 0 && xBottom >= 0 && xBottom <= rect.width) {
+          candidates.push({ t: tBottom, x: xBottom, y: rect.height, edge: "bottom" });
+        }
+        const tTop = (0 - Number(start?.y)) / dy;
+        const xTop = Number(start?.x) + dx * tTop;
+        if (tTop > 0 && xTop >= 0 && xTop <= rect.width) {
+          candidates.push({ t: tTop, x: xTop, y: 0, edge: "top" });
+        }
+      }
+
+      if (!candidates.length) return through;
+      candidates.sort((a, b) => {
+        const aAxis = a.edge === "bottom" || a.edge === "right" ? 0 : 1;
+        const bAxis = b.edge === "bottom" || b.edge === "right" ? 0 : 1;
+        if (aAxis !== bAxis) return aAxis - bAxis;
+        return a.t - b.t;
+      });
+      return candidates[0];
     }
 
     function drawSimpleArc() {
@@ -2294,7 +2662,7 @@
 
       ctx.save();
       ctx.setLineDash([6, 6]);
-      ctx.strokeStyle = "rgba(126,240,191,0.25)";
+      ctx.strokeStyle = "rgba(74,222,128,0.25)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(originS.x, originS.y);
@@ -2303,7 +2671,7 @@
 
       ctx.setLineDash([]);
       ctx.setLineDash([6, 6]);
-      ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.strokeStyle = "rgba(74,222,128,0.25)";
       ctx.lineWidth = 3;
       ctx.beginPath();
       for (let i = 0; i < arcPoints.length; i += 1) {
@@ -2320,26 +2688,81 @@
 
       if (bisectorEnd) {
         const bisectorEndS = worldToScreen(bisectorEnd.x, bisectorEnd.y);
+        const bisectorRayEndS = extendRayToCanvasEdge(centerS, bisectorEndS);
         ctx.save();
         ctx.setLineDash([6, 6]);
         ctx.strokeStyle = "rgba(255,255,255,0.25)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(centerS.x, centerS.y);
-        ctx.lineTo(bisectorEndS.x, bisectorEndS.y);
+        ctx.lineTo(bisectorRayEndS.x, bisectorRayEndS.y);
         ctx.stroke();
-        ctx.fillStyle = "rgba(126,240,191,0.92)";
-        ctx.beginPath();
-        ctx.arc(bisectorEndS.x, bisectorEndS.y, 3.75, 0, Math.PI * 2);
-        ctx.fill();
         ctx.restore();
       }
 
       const endS = worldToScreen(arcPoints[arcPoints.length - 1].x, arcPoints[arcPoints.length - 1].y);
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("Complex curve", centerS.x + 8, centerS.y - 24);
       ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
       ctx.fillText(`Radius = ${Math.abs(arc.radius).toFixed(2)}, Al = ${(arc.arcLength).toFixed(2)}`, endS.x + 10, endS.y - 8);
+      ctx.restore();
+    }
+
+    function drawSimpleCurve() {
+      const solution = state.simpleArcSolution || solveSimpleArc();
+      const simpleCurve = solution?.simpleCurve || buildSimpleCurveGeometry(solution);
+      if (!simpleCurve?.valid || !Array.isArray(simpleCurve.pathPoints) || simpleCurve.pathPoints.length < 2) return;
+
+      const pathPoints = simpleCurve.pathPoints.map(point => worldToScreen(point.x, point.y));
+      const centerS = worldToScreen(simpleCurve.center.x, simpleCurve.center.y);
+      const startS = worldToScreen(simpleCurve.startPoint.x, simpleCurve.startPoint.y);
+      const endS = worldToScreen(simpleCurve.endPoint.x, simpleCurve.endPoint.y);
+
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(74,222,128,0.84)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
+      for (let i = 1; i < pathPoints.length; i += 1) {
+        ctx.lineTo(pathPoints[i].x, pathPoints[i].y);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(74,222,128,0.22)";
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
+      for (let i = 1; i < pathPoints.length; i += 1) {
+        ctx.lineTo(pathPoints[i].x, pathPoints[i].y);
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(74,222,128,0.98)";
+      ctx.beginPath();
+      ctx.arc(startS.x, startS.y, 3.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(74,222,128,0.9)";
+      ctx.beginPath();
+      ctx.arc(endS.x, endS.y, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.beginPath();
+      ctx.arc(centerS.x, centerS.y, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(237,243,255,0.88)";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("Simple curve", startS.x + 8, startS.y + 14);
+      ctx.fillText("VC", centerS.x + 8, centerS.y - 8);
+      ctx.fillText(`Final Rp`, endS.x + 10, endS.y - 8);
+      ctx.fillText(`R = ${Math.abs(simpleCurve.radius).toFixed(2)}, L = ${(simpleCurve.arcLength).toFixed(2)}`, endS.x + 10, endS.y + 10);
+
       ctx.restore();
     }
 
@@ -2439,8 +2862,6 @@
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      // Render the shadow vehicles as a physical sweep of the same vehicle
-      // moving along the solved path, from start pose to terminal pose.
       const total = Math.max(1, copies.length - 1);
       for (let i = 0; i < copies.length; i += 1) {
         const copy = copies[i];
@@ -2598,6 +3019,7 @@
       }
       drawVehicleCopies();
       drawSimpleArc();
+      drawSimpleCurve();
       if (state.ui.vehicle) {
         drawVehicle();
       }
@@ -2628,6 +3050,10 @@
       const entries = [{
         label: "Cor",
         value: formatCoordSummary(terminalCor, solution?.spTravelDistance),
+        full: true
+      }, {
+        label: "Errors",
+        value: formatErrorSummary(solution),
         full: true
       }, ...(solution?.edgeCase ? [{
         label: "Status",
@@ -2711,7 +3137,9 @@
     }
 
     function normalizeDeltaPsiDegrees(degrees) {
-      return Math.round(clampDeltaPsiDegrees(degrees));
+      const clamped = clampDeltaPsiDegrees(degrees);
+      const step = getDeltaPsiStep(clamped);
+      return Math.round(clamped / step) * step;
     }
 
     function normalizeDeltaPsi(rad) {
@@ -2726,11 +3154,61 @@
       return (Number(value) || 0).toFixed(3);
     }
 
+    function getRadiusStep(value) {
+      const magnitude = Math.abs(Number(value) || 0);
+      if (magnitude < 0.01) return 0.001;
+      if (magnitude < 0.1) return 0.01;
+      if (magnitude < 1) return 0.1;
+      if (magnitude < 10) return 1;
+      return 10;
+    }
+
+    function normalizeRadiusValue(value) {
+      const numeric = clamp(Number(value) || 0, -100, 100);
+      const sign = numeric < 0 ? -1 : 1;
+      const magnitude = Math.abs(numeric);
+      const step = getRadiusStep(magnitude);
+      const normalized = Math.max(0.001, Math.round(magnitude / step) * step);
+      return Number((sign * normalized).toFixed(3));
+    }
+
+    function formatRadiusValue(value) {
+      return Number(value || 0).toFixed(3);
+    }
+
+    function getSteerMaxStepDegrees(value) {
+      const degrees = Math.abs(Number(value) || 0);
+      if (degrees > 89.99) return 0.001;
+      if (degrees > 89.9) return 0.01;
+      if (degrees > 89) return 0.1;
+      return 1;
+    }
+
+    function normalizeSteerMaxDegrees(degrees) {
+      const clamped = clamp(Number(degrees) || 0, 45, 90);
+      const step = getSteerMaxStepDegrees(clamped);
+      if (step === 1) return Math.round(clamped);
+      if (step === 0.1) return Math.round(clamped * 10) / 10;
+      if (step === 0.01) return Math.round(clamped * 100) / 100;
+      return Math.round(clamped * 1000) / 1000;
+    }
+
+    function formatSteerMaxValue(value) {
+      return Number(value || 0).toFixed(2);
+    }
+
     function formatCoordSummary(coord, pathLength = null) {
       if (!coord) return "NaN";
       const coordText = `(${formatFixed3(coord.X)}, ${formatFixed3(coord.Y)}, ${formatFixed3(coord.Psi)})`;
       if (!Number.isFinite(Number(pathLength))) return coordText;
       return `${coordText} ${formatFixed3(pathLength)}`;
+    }
+
+    function formatErrorSummary(solution) {
+      if (!solution) return "NaN";
+      const position = formatFixed3(solution.positionError);
+      const heading = formatFixed3(solution.headingError);
+      return `Position ${position}, Heading ${heading}`;
     }
 
     function vectorAtPoint(point, baseAngle, length, label, color) {
@@ -2934,16 +3412,22 @@
     }, { passive: false });
 
     function syncInputs() {
-      arcRadiusInput.value = (Number(state.arc?.radius) || 1).toFixed(2);
+      const radius = Number(state.arc?.radius) || 1;
+      arcRadiusInput.step = String(getRadiusStep(radius));
+      if (document.activeElement !== arcRadiusInput) {
+        arcRadiusInput.value = formatRadiusValue(radius);
+      }
       const deltaPsi = normalizeDeltaPsi(getSimpleArcDeltaPsi());
       const deltaPsiDegrees = normalizeDeltaPsiDegrees(radToDeg(deltaPsi));
+      arcAngleInput.step = String(getDeltaPsiStep(deltaPsiDegrees));
       if (document.activeElement !== arcAngleInput) {
         arcAngleInput.value = String(deltaPsiDegrees);
       }
       const steerMax = normalizeSteerMax(getSimpleArcSteerMax());
       const steerMaxDegrees = normalizeSteerMaxDegrees(radToDeg(steerMax));
+      arcSteerMaxInput.step = String(getSteerMaxStepDegrees(steerMaxDegrees));
       if (document.activeElement !== arcSteerMaxInput) {
-        arcSteerMaxInput.value = String(steerMaxDegrees);
+        arcSteerMaxInput.value = formatSteerMaxValue(steerMaxDegrees);
       }
       arcShadowCountInput.value = String(normalizeShadowCount(state.arc?.shadowCount || 9));
     }
@@ -2977,11 +3461,24 @@
     arcRadiusInput.addEventListener("input", () => {
       const value = Number(arcRadiusInput.value);
       state.arc.radius = clamp(value || 0, -100, 100);
-      if (Math.abs(state.arc.radius) < 0.01) {
-        state.arc.radius = state.arc.radius < 0 ? -0.01 : 0.01;
+      if (Math.abs(state.arc.radius) < 0.001) {
+        state.arc.radius = state.arc.radius < 0 ? -0.001 : 0.001;
       }
       syncInputs();
       recalculateVehicleSolution();
+    });
+
+    arcRadiusInput.addEventListener("blur", () => {
+      state.arc.radius = normalizeRadiusValue(state.arc.radius);
+      syncInputs();
+      recalculateVehicleSolution();
+    });
+
+    arcRadiusInput.addEventListener("focus", () => {
+      const radius = Number(state.arc?.radius) || 1;
+      arcRadiusInput.step = String(getRadiusStep(radius));
+      arcRadiusInput.value = formatRadiusValue(radius);
+      arcRadiusInput.select();
     });
     arcAngleInput.addEventListener("input", () => {
       const value = Number(arcAngleInput.value);
@@ -3009,14 +3506,18 @@
     arcSteerMaxInput.addEventListener("input", () => {
       const value = Number(arcSteerMaxInput.value);
       const degrees = Number.isFinite(value) ? value : 90;
-      state.arc.steerMax = normalizeSteerMax(degToRad(normalizeSteerMaxDegrees(degrees)));
+      const normalizedDegrees = normalizeSteerMaxDegrees(degrees);
+      state.arc.steerMax = normalizeSteerMax(degToRad(normalizedDegrees));
+      arcSteerMaxInput.step = String(getSteerMaxStepDegrees(normalizedDegrees));
       syncInputs();
       recalculateVehicleSolution();
     });
 
     arcSteerMaxInput.addEventListener("focus", () => {
       const steerMax = normalizeSteerMax(getSimpleArcSteerMax());
-      arcSteerMaxInput.value = String(normalizeSteerMaxDegrees(radToDeg(steerMax)));
+      const steerMaxDegrees = normalizeSteerMaxDegrees(radToDeg(steerMax));
+      arcSteerMaxInput.step = String(getSteerMaxStepDegrees(steerMaxDegrees));
+      arcSteerMaxInput.value = formatSteerMaxValue(steerMaxDegrees);
       arcSteerMaxInput.select();
     });
 
@@ -3087,6 +3588,11 @@
       }
       const traces = getSimpleArcPathTraces();
       for (const point of traces.pathPoints) {
+        xs.push(Number(point.x) || 0);
+        ys.push(Number(point.y) || 0);
+      }
+      const simpleTraces = getSimpleCurvePathTraces();
+      for (const point of simpleTraces.pathPoints) {
         xs.push(Number(point.x) || 0);
         ys.push(Number(point.y) || 0);
       }
