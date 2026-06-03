@@ -3,5 +3,11 @@ set -euo pipefail
 
 PORT="${VECTOR_VIEWER_PORT:-8792}"
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_SRC="$BASE_DIR/spline_lab_server.pas"
+SERVER_BIN="$BASE_DIR/spline_lab_server"
 
-exec python3 -m http.server "$PORT" --bind 0.0.0.0 --directory "$BASE_DIR"
+if [[ ! -x "$SERVER_BIN" || "$SERVER_SRC" -nt "$SERVER_BIN" ]]; then
+  fpc -Mdelphi -O3 -B -o"$SERVER_BIN" "$SERVER_SRC"
+fi
+
+exec "$SERVER_BIN" "$PORT"
