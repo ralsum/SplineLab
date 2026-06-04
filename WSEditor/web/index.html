@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WSEditor</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="title">Untitled - WSEditor</div>
+    <nav class="menus">
+      <div class="menu">
+        <button class="menu-btn" type="button">File</button>
+        <div class="menu-panel">
+          <button type="button" data-cmd="new">New	Ctrl+K N</button>
+          <button type="button" data-cmd="open">Open...	Ctrl+K O</button>
+          <button type="button" data-cmd="save">Save	Ctrl+K S</button>
+          <button type="button" data-cmd="saveAs">Save & As...	Ctrl+K A</button>
+          <hr />
+          <button type="button" data-cmd="exit">Exit	Ctrl+K Q</button>
+        </div>
+      </div>
+
+      <div class="menu">
+        <button class="menu-btn" type="button">Format</button>
+        <div class="menu-panel">
+          <button type="button" data-cmd="font">Font...	Ctrl+K F</button>
+        </div>
+      </div>
+
+      <div class="menu">
+        <button class="menu-btn" type="button">Help</button>
+        <div class="menu-panel">
+          <button type="button" data-cmd="about">About</button>
+        </div>
+      </div>
+    </nav>
+  </header>
+
+  <main class="main">
+    <textarea id="editor" spellcheck="false" wrap="off" aria-label="Text editor"></textarea>
+  </main>
+
+  <input id="fallbackOpen" type="file" accept=".txt,text/plain,*/*" hidden />
+
+  <div class="overlay" id="modalOverlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" id="modal">
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-actions" id="modalActions"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
