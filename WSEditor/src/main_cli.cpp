@@ -25,6 +25,7 @@ constexpr int kTabWidth = 4;
 enum class KeyType {
   Char,
   CtrlKey,
+  Undo,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
@@ -223,6 +224,13 @@ std::string TrimNewlines(std::string text) {
   return text;
 }
 
+std::string ToLowerCopy(std::string text) {
+  for (char& ch : text) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return text;
+}
+
 std::optional<std::string> RunCommandRead(const std::string& command) {
   FILE* pipe = popen(command.c_str(), "r");
   if (pipe == nullptr) {
@@ -411,6 +419,22 @@ class Editor {
 
  private:
   std::vector<std::string> lines_ = {""};
+  struct Snapshot {
+    std::vector<std::string> lines;
+    std::filesystem::path file_path;
+    bool dirty = false;
+    int cursor_x = 0;
+    int cursor_y = 0;
+    int row_offset = 0;
+    int col_offset = 0;
+    int preferred_rx = 0;
+    std::optional<CursorPos> block_anchor;
+    std::optional<CursorPos> block_end;
+    bool bold_active = false;
+    bool underline_active = false;
+  };
+
+  std::vector<Snapshot> undo_stack_;
   std::filesystem::path file_path_;
   bool dirty_ = false;
   bool quit_ = false;
@@ -418,6 +442,7 @@ class Editor {
   std::optional<CursorPos> block_anchor_;
   std::optional<CursorPos> block_end_;
   std::string clipboard_cache_;
+  std::string last_find_query_;
   bool bold_active_ = false;
   bool underline_active_ = false;
   int cursor_x_ = 0;
@@ -446,6 +471,58 @@ class Editor {
 
   void markDirty(bool dirty = true) {
     dirty_ = dirty;
+  }
+
+  void pushUndoSnapshot() {
+    if (undo_stack_.size() >= 128) {
+      undo_stack_.erase(undo_stack_.begin());
+    }
+    undo_stack_.push_back(Snapshot{
+        lines_,
+        file_path_,
+        dirty_,
+        cursor_x_,
+        cursor_y_,
+        row_offset_,
+        col_offset_,
+        preferred_rx_,
+        block_anchor_,
+        block_end_,
+        bold_active_,
+        underline_active_,
+    });
+  }
+
+  void restoreSnapshot(const Snapshot& snapshot) {
+    lines_ = snapshot.lines;
+    if (lines_.empty()) {
+      lines_.push_back({});
+    }
+    file_path_ = snapshot.file_path;
+    dirty_ = snapshot.dirty;
+    cursor_x_ = snapshot.cursor_x;
+    cursor_y_ = snapshot.cursor_y;
+    row_offset_ = snapshot.row_offset;
+    col_offset_ = snapshot.col_offset;
+    preferred_rx_ = snapshot.preferred_rx;
+    block_anchor_ = snapshot.block_anchor;
+    block_end_ = snapshot.block_end;
+    bold_active_ = snapshot.bold_active;
+    underline_active_ = snapshot.underline_active;
+    ensureCursorInRange();
+    updatePreferredRx();
+  }
+
+  void undoLastAction() {
+    if (undo_stack_.empty()) {
+      setStatus("Nothing to undo");
+      return;
+    }
+
+    const Snapshot snapshot = undo_stack_.back();
+    undo_stack_.pop_back();
+    restoreSnapshot(snapshot);
+    setStatus("Undid previous action");
   }
 
   void ensureDataDir() {
@@ -639,6 +716,7 @@ class Editor {
   }
 
   void insertChar(char ch) {
+    pushUndoSnapshot();
     std::string& line = lines_[static_cast<size_t>(cursor_y_)];
     line.insert(static_cast<size_t>(cursor_x_), 1, ch);
     ++cursor_x_;
@@ -646,6 +724,7 @@ class Editor {
   }
 
   void insertNewline() {
+    pushUndoSnapshot();
     std::string& line = lines_[static_cast<size_t>(cursor_y_)];
     const std::string right = line.substr(static_cast<size_t>(cursor_x_));
     line.erase(static_cast<size_t>(cursor_x_));
@@ -656,6 +735,7 @@ class Editor {
   }
 
   void backspace() {
+    pushUndoSnapshot();
     if (cursor_x_ > 0) {
       std::string& line = lines_[static_cast<size_t>(cursor_y_)];
       line.erase(static_cast<size_t>(cursor_x_ - 1), 1);
@@ -680,6 +760,7 @@ class Editor {
   }
 
   void deleteChar() {
+    pushUndoSnapshot();
     std::string& line = lines_[static_cast<size_t>(cursor_y_)];
     if (cursor_x_ < static_cast<int>(line.size())) {
       line.erase(static_cast<size_t>(cursor_x_), 1);
@@ -798,6 +879,7 @@ class Editor {
   }
 
   void replaceBufferText(const std::string& text) {
+    pushUndoSnapshot();
     lines_ = SplitLines(text);
     if (lines_.empty()) {
       lines_.push_back({});
@@ -818,7 +900,42 @@ class Editor {
     return text.substr(static_cast<size_t>(start_idx), static_cast<size_t>(end_idx - start_idx));
   }
 
+  bool findNextText(const std::string& needle, int start_index, bool wrap = true) {
+    if (needle.empty()) {
+      setStatus("Nothing to find");
+      return false;
+    }
+
+    const std::string text = bufferText();
+    const std::string lowered_text = ToLowerCopy(text);
+    const std::string lowered_needle = ToLowerCopy(needle);
+    const int clamped_start = std::clamp(start_index, 0, static_cast<int>(text.size()));
+    size_t found = lowered_text.find(lowered_needle, static_cast<size_t>(clamped_start));
+    bool wrapped = false;
+    if (found == std::string::npos && wrap && clamped_start > 0) {
+      found = lowered_text.find(lowered_needle, 0);
+      wrapped = found != std::string::npos && static_cast<int>(found) < clamped_start;
+    }
+    if (found == std::string::npos) {
+      setStatus("Text not found");
+      return false;
+    }
+
+    const CursorPos start = posFromLinearIndex(static_cast<int>(found));
+    const CursorPos end = posFromLinearIndex(static_cast<int>(found + needle.size()));
+    cursor_y_ = start.y;
+    cursor_x_ = start.x;
+    block_anchor_ = start;
+    block_end_ = end;
+    ensureCursorInRange();
+    updatePreferredRx();
+    saveBlockState();
+    setStatus(wrapped ? "Text found (wrapped)" : "Text found");
+    return true;
+  }
+
   void deleteRange(CursorPos start, CursorPos end) {
+    pushUndoSnapshot();
     const auto [lo, hi] = normalizeRange(start, end);
     std::string text = bufferText();
     const int start_idx = std::clamp(linearIndex(lo), 0, static_cast<int>(text.size()));
@@ -845,6 +962,7 @@ class Editor {
       return;
     }
 
+    pushUndoSnapshot();
     std::string buffer = bufferText();
     const int insert_idx = std::clamp(linearIndex(pos), 0, static_cast<int>(buffer.size()));
     buffer.insert(static_cast<size_t>(insert_idx), text);
@@ -878,6 +996,7 @@ class Editor {
   }
 
   void beginBlock() {
+    pushUndoSnapshot();
     block_anchor_ = currentPos();
     block_end_.reset();
     setStatus("Block begin set");
@@ -889,6 +1008,7 @@ class Editor {
       setStatus("No block begin set");
       return;
     }
+    pushUndoSnapshot();
     block_end_ = currentPos();
     setStatus("Block end set");
     saveBlockState();
@@ -930,7 +1050,6 @@ class Editor {
     copySelectionToClipboard(text, "Block cut");
     deleteRange(lo, hi);
     clearBlockRange();
-    setStatus("Block cut");
   }
 
   void moveBlock() {
@@ -967,6 +1086,7 @@ class Editor {
   }
 
   void pasteClipboard() {
+    pushUndoSnapshot();
     std::string text = clipboard_cache_;
     if (text.empty()) {
       auto pasted = SystemClipboardPaste();
@@ -1008,6 +1128,7 @@ class Editor {
   }
 
   void deleteToEndOfLine() {
+    pushUndoSnapshot();
     std::string& line = lines_[static_cast<size_t>(cursor_y_)];
     if (cursor_x_ < static_cast<int>(line.size())) {
       line.erase(static_cast<size_t>(cursor_x_));
@@ -1025,7 +1146,18 @@ class Editor {
     setStatus("Moved to end of document");
   }
 
+  void moveToLineStart() {
+    moveHome();
+    setStatus("Moved to beginning of line");
+  }
+
+  void moveToLineEnd() {
+    moveEnd();
+    setStatus("Moved to end of line");
+  }
+
   void deleteLine() {
+    pushUndoSnapshot();
     if (lines_.size() <= 1) {
       lines_[0].clear();
       cursor_x_ = 0;
@@ -1046,6 +1178,7 @@ class Editor {
   }
 
   void deleteWordRight() {
+    pushUndoSnapshot();
     const std::string text = bufferText();
     const int start_idx = std::clamp(linearIndex(currentPos()), 0, static_cast<int>(text.size()));
     int end_idx = start_idx;
@@ -1083,6 +1216,7 @@ class Editor {
       return;
     }
 
+    pushUndoSnapshot();
     int start = cursor_y_;
     while (start > 0 && !lines_[static_cast<size_t>(start - 1)].empty()) {
       --start;
@@ -1107,7 +1241,7 @@ class Editor {
       return;
     }
 
-    constexpr int kParagraphWidth = 72;
+    constexpr int kParagraphWidth = 1000;
     std::vector<std::string> wrapped;
     std::string line;
     for (const auto& word : words) {
@@ -1143,6 +1277,22 @@ class Editor {
 
   void moveWordLeft() {
     if (cursor_x_ == 0 && cursor_y_ == 0) {
+      return;
+    }
+
+    if (cursor_x_ == 0 && cursor_y_ > 0) {
+      --cursor_y_;
+      const std::string& prev_line = lines_[static_cast<size_t>(cursor_y_)];
+      int x = static_cast<int>(prev_line.size());
+      while (x > 0 && std::isspace(static_cast<unsigned char>(prev_line[static_cast<size_t>(x - 1)]))) {
+        --x;
+      }
+      while (x > 0 && isWordChar(static_cast<unsigned char>(prev_line[static_cast<size_t>(x - 1)]))) {
+        --x;
+      }
+      cursor_x_ = x;
+      ensureCursorInRange();
+      updatePreferredRx();
       return;
     }
 
@@ -1186,42 +1336,43 @@ class Editor {
   }
 
   void moveWordRight() {
-    auto stepRight = [&]() {
-      const int line_len = static_cast<int>(lines_[static_cast<size_t>(cursor_y_)].size());
-      if (cursor_x_ < line_len) {
-        ++cursor_x_;
-      } else if (cursor_y_ + 1 < static_cast<int>(lines_.size())) {
+    const std::string& line = lines_[static_cast<size_t>(cursor_y_)];
+    const int line_len = static_cast<int>(line.size());
+    if (cursor_x_ >= line_len) {
+      if (cursor_y_ + 1 < static_cast<int>(lines_.size())) {
         ++cursor_y_;
-        cursor_x_ = 0;
-      }
-    };
-
-    while (cursor_y_ < static_cast<int>(lines_.size())) {
-      const std::string& line = lines_[static_cast<size_t>(cursor_y_)];
-      if (cursor_x_ < static_cast<int>(line.size())) {
-        const unsigned char ch = static_cast<unsigned char>(line[static_cast<size_t>(cursor_x_)]);
-        if (!std::isspace(ch)) {
-          break;
+        const std::string& next_line = lines_[static_cast<size_t>(cursor_y_)];
+        int x = 0;
+        while (x < static_cast<int>(next_line.size()) &&
+               std::isspace(static_cast<unsigned char>(next_line[static_cast<size_t>(x)]))) {
+          ++x;
         }
-      } else if (cursor_y_ + 1 >= static_cast<int>(lines_.size())) {
-        break;
+        cursor_x_ = x;
       }
-
-      stepRight();
+      updatePreferredRx();
+      return;
     }
 
-    while (cursor_y_ < static_cast<int>(lines_.size())) {
-      const std::string& line = lines_[static_cast<size_t>(cursor_y_)];
-      if (cursor_x_ >= static_cast<int>(line.size())) {
-        break;
-      }
+    auto isWordAt = [&](int index) {
+      return index >= 0 && index < line_len &&
+             isWordChar(static_cast<unsigned char>(line[static_cast<size_t>(index)]));
+    };
 
-      const unsigned char ch = static_cast<unsigned char>(line[static_cast<size_t>(cursor_x_)]);
-      if (!isWordChar(ch)) {
-        break;
+    int x = cursor_x_;
+    if (isWordAt(x)) {
+      while (x < line_len && isWordChar(static_cast<unsigned char>(line[static_cast<size_t>(x)]))) {
+        ++x;
       }
+    }
 
-      stepRight();
+    while (x < line_len && !isWordChar(static_cast<unsigned char>(line[static_cast<size_t>(x)]))) {
+      ++x;
+    }
+
+    if (x >= line_len) {
+      cursor_x_ = line_len;
+    } else {
+      cursor_x_ = x;
     }
 
     ensureCursorInRange();
@@ -1307,6 +1458,7 @@ class Editor {
   }
 
   bool loadFile(const std::filesystem::path& path) {
+    pushUndoSnapshot();
     std::string raw = ReadAll(path);
     if (raw.empty() && !std::filesystem::exists(path)) {
       setStatus("Open failed: file not found");
@@ -1340,6 +1492,7 @@ class Editor {
   }
 
   void newFile() {
+    pushUndoSnapshot();
     lines_.assign(1, std::string{});
     file_path_.clear();
     cursor_x_ = 0;
@@ -1426,6 +1579,12 @@ class Editor {
       case 'y':
         cutBlock();
         break;
+      case 'a':
+        moveToLineStart();
+        break;
+      case 'f':
+        moveToLineEnd();
+        break;
       default:
         setStatus(std::string("Ctrl+K command not mapped: ") + ch);
         break;
@@ -1446,6 +1605,25 @@ class Editor {
       case 'v':
         moveToDocumentEnd();
         break;
+      case 'f': {
+        std::string needle;
+        int search_start = linearIndex(currentPos()) + 1;
+        if (hasBlockRange()) {
+          const auto [lo, hi] = blockRange();
+          needle = extractRangeText(lo, hi);
+          search_start = linearIndex(hi);
+        } else {
+          const auto query = prompt("Find: ");
+          if (!query.has_value() || query->empty()) {
+            setStatus("Find canceled");
+            return;
+          }
+          needle = *query;
+        }
+        last_find_query_ = needle;
+        findNextText(needle, search_start);
+        break;
+      }
       case 'y':
         deleteToEndOfLine();
         break;
@@ -1538,6 +1716,15 @@ class Editor {
             prefix_mode_ = PrefixMode::K;
             setStatus("Ctrl+K prefix");
             break;
+          case 12:
+            if (last_find_query_.empty()) {
+              setStatus("No previous find");
+              break;
+            }
+            findNextText(
+                last_find_query_,
+                hasBlockRange() ? linearIndex(blockRange().second) : linearIndex(currentPos()) + 1);
+            break;
           case 13:
             insertNewline();
             break;
@@ -1581,6 +1768,9 @@ class Editor {
           default:
             break;
         }
+        break;
+      case KeyType::Undo:
+        undoLastAction();
         break;
       case KeyType::Char:
         if (std::isprint(static_cast<unsigned char>(key.ch))) {
@@ -1677,6 +1867,10 @@ class Editor {
     const ssize_t n1 = ::read(STDIN_FILENO, &seq[0], 1);
     if (n1 != 1) {
       return {KeyType::Escape, '\x1b'};
+    }
+
+    if (seq[0] == 127 || seq[0] == '\b') {
+      return {KeyType::Undo, '\0'};
     }
 
     if (seq[0] != '[') {

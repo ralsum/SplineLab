@@ -6,12 +6,13 @@ WSEditor is a lightweight WordStar-style text editor.
 
 - Full-screen terminal editor with UTF-8 file I/O
 - Arrow keys, Home/End, Page Up/Down, Backspace/Delete
-- WordStar-style navigation: `Ctrl+E/X/S/D/A/F/R/C/W/Z`
+- WordStar-style navigation: `Ctrl+E/X/S/D/A/F/R/C/W/Z` (`Ctrl+A/F` move by word and cross line boundaries at the edges)
 - Edit commands: `Ctrl+G` delete char, `Ctrl+H` backspace, `Ctrl+Y` delete line, `Ctrl+T` delete word right, `Ctrl+B` reflow paragraph
-- Prefix commands: `Ctrl+K` file/block actions, `Ctrl+Q` document navigation/delete, `Ctrl+P` bold/underline
+- Prefix commands: `Ctrl+K` file/block/line actions, `Ctrl+Q` document navigation/delete, `Ctrl+P` bold/underline
 - Clipboard paste: `Ctrl+V`
 - Direct shortcuts: `Ctrl+O` open
 - Save is `Ctrl+K S`
+- Undo: `Alt+Backspace`
 
 WordStar keys included:
 - Second keys may be typed plain or with Ctrl held; `Ctrl+K Ctrl+X` works like `Ctrl+K X`.
@@ -25,6 +26,10 @@ WordStar keys included:
 - `Ctrl+K V` move block
 - `Ctrl+K Y` cut block to clipboard and delete
 - `Ctrl+Q Y` delete to end of line
+- `Ctrl+K A` move to beginning of current line
+- `Ctrl+K F` move to end of current line
+- `Ctrl+Q F` find next occurrence, or search for the current block if one is selected; case-insensitive and wraps to the top if needed
+- `Ctrl+L` continue the last find
 - `Ctrl+Q R` move to beginning of document
 - `Ctrl+Q C` move to end of document
 - `Ctrl+Q V` move to end of document
