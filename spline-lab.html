@@ -2621,6 +2621,20 @@
       };
     }
 
+    function getSimpleArcPathTraces(solution = state.simpleArcSolution || solveSimpleArc()) {
+      const simpleCurve = solution?.simpleCurve || null;
+      const pathPoints = Array.isArray(solution?.pathPoints)
+        ? solution.pathPoints
+        : (Array.isArray(simpleCurve?.pathPoints) ? simpleCurve.pathPoints : []);
+      return {
+        pathPoints,
+        rpWorldPoints: pathPoints.map(point => ({
+          x: Number(point.x) || 0,
+          y: Number(point.y) || 0
+        }))
+      };
+    }
+
     function getSimpleArcBisectorPoint(arc = getSimpleArcGeometry()) {
       if (!arc?.valid) return null;
       const bisectorAngle = arc.startAngle + arc.turnAngle / 2;
@@ -2728,7 +2742,7 @@
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText("Complex curve", centerS.x + 8, centerS.y - 24);
-      ctx.fillText("VCor", centerS.x + 8, centerS.y - 8);
+      ctx.fillText("CCor", centerS.x + 8, centerS.y - 8);
       ctx.fillText(`Radius = ${Math.abs(arc.radius).toFixed(2)}, Al = ${(arc.arcLength).toFixed(2)}`, endS.x + 10, endS.y - 8);
       ctx.restore();
     }
@@ -2783,7 +2797,7 @@
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText("Simple curve", startS.x + 8, startS.y + 14);
-      ctx.fillText("CCor", centerS.x + 8, centerS.y - 8);
+      ctx.fillText("VCor", centerS.x + 8, centerS.y - 8);
       ctx.fillText(`Final Rp`, endS.x + 10, endS.y - 8);
       ctx.fillText(`R = ${Math.abs(simpleCurve.radius).toFixed(2)}, L = ${(simpleCurve.arcLength).toFixed(2)}`, endS.x + 10, endS.y + 10);
 
@@ -2997,58 +3011,69 @@
       ctx.restore();
     }
 
-    function getSimpleArcPathTraces(solution = state.simpleArcSolution || solveSimpleArc()) {
-      const pathPoints = Array.isArray(solution?.pathPoints) ? solution.pathPoints : [];
-      if (!pathPoints.length) {
-        return { pathPoints, rpWorldPoints: [] };
+    function getVehicleCopyTracePoints(copies) {
+      const points = [];
+      if (!Array.isArray(copies)) {
+        return points;
       }
-      const rpWorldPoints = pathPoints.map(point => ({
-        x: Number(point.x) || 0,
-        y: Number(point.y) || 0
-      }));
-      return { pathPoints, rpWorldPoints };
+      for (const copy of copies) {
+        const x = Number(copy?.x);
+        const y = Number(copy?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        points.push({ x, y });
+      }
+      return points;
     }
 
     function drawVehiclePathTrace() {
-      const { rpWorldPoints } = getSimpleArcPathTraces();
-      const rpPoints = rpWorldPoints.map(point => worldToScreen(point.x, point.y));
-      if (rpPoints.length < 2) return;
+      const complexPoints = getVehicleCopyTracePoints(state.vehicleCopies).map(point => worldToScreen(point.x, point.y));
+      const simplePoints = getVehicleCopyTracePoints(state.simpleVehicleCopies).map(point => worldToScreen(point.x, point.y));
+      if (complexPoints.length < 2 && simplePoints.length < 2) return;
 
       ctx.save();
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      // Draw the overall path with a stronger stroke so the vehicle motion is obvious.
-      ctx.strokeStyle = "rgba(126,240,191,0.72)";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(rpPoints[0].x, rpPoints[0].y);
-      for (let i = 1; i < rpPoints.length; i += 1) {
-        ctx.lineTo(rpPoints[i].x, rpPoints[i].y);
-      }
-      ctx.stroke();
+      const drawTrace = (points, strokeStyle, width, startFill, endFill) => {
+        if (points.length < 2) return;
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) {
+          ctx.lineTo(points[i].x, points[i].y);
+        }
+        ctx.stroke();
 
-      // Add a subtle fading overlay to hint at direction without overpowering the vehicle copies.
-      ctx.strokeStyle = "rgba(125,211,252,0.28)";
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(rpPoints[0].x, rpPoints[0].y);
-      for (let i = 1; i < rpPoints.length; i += 1) {
-        ctx.lineTo(rpPoints[i].x, rpPoints[i].y);
-      }
-      ctx.stroke();
+        const start = points[0];
+        const end = points[points.length - 1];
+        ctx.fillStyle = startFill;
+        ctx.beginPath();
+        ctx.arc(start.x, start.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = endFill;
+        ctx.beginPath();
+        ctx.arc(end.x, end.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      };
 
-      // Mark the start and end so the line reads as a path, not just a decoration.
-      const start = rpPoints[0];
-      const end = rpPoints[rpPoints.length - 1];
-      ctx.fillStyle = "rgba(125,211,252,0.95)";
-      ctx.beginPath();
-      ctx.arc(start.x, start.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(126,240,191,0.95)";
-      ctx.beginPath();
-      ctx.arc(end.x, end.y, 4, 0, Math.PI * 2);
-      ctx.fill();
+      // Complex Rp trace is red and thin.
+      drawTrace(
+        complexPoints,
+        "rgba(248,113,113,0.82)",
+        1.5,
+        "rgba(248,113,113,0.95)",
+        "rgba(248,113,113,0.95)"
+      );
+
+      // Simple Rp trace stays green and thin.
+      drawTrace(
+        simplePoints,
+        "rgba(126,240,191,0.82)",
+        1.5,
+        "rgba(126,240,191,0.95)",
+        "rgba(126,240,191,0.95)"
+      );
 
       ctx.restore();
     }
@@ -3207,7 +3232,7 @@
         value: formatComplexTerminalSummary(solution),
         full: true
       }, {
-        label: "VCor",
+        label: "CCor",
         value: formatVcSummary(solution),
         full: true
       }, {
@@ -3228,7 +3253,7 @@
         full: true
       }, ...(solution?.edgeCase ? [{
         label: "Status",
-        value: "Edge case: steer max reached before VCor could hit the bisector.",
+        value: "Edge case: steer max reached before CCor could hit the bisector.",
         full: true
       }] : [])];
       for (const entry of entries) {
