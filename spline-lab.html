@@ -1204,14 +1204,21 @@
       if (!bisectorGeometry.valid) {
         return {
           sl: candidateSl,
+          slew: candidateSl,
           error: NaN,
           geometry: bisectorGeometry,
           intersection: null,
           endPose: null,
+          complexTerminalPose: null,
           cor: null,
+          complexVc: null,
           corDistance: NaN,
           rearDistance: NaN,
-          bodyAlignment: NaN
+          bodyAlignment: NaN,
+          theta: NaN,
+          steeredWheelHeadingChange: NaN,
+          terminalRadius: NaN,
+          steeredWheelTravelDistance: NaN
         };
       }
       const curveLength = Math.max(0, getCurveLengthFromGeometry(geometry));
@@ -1238,17 +1245,25 @@
         : NaN;
       const bodyAlignment = bodyDirection ? dot2(bodyDirection, bisectorGeometry.bisectorDir) : NaN;
       const error = corDistance;
+      const terminalRadius = getDerivedTerminalRadius(endPose, cor, radius);
       return {
         sl: candidateSl,
+        slew: candidateSl,
         error,
         geometry: bisectorGeometry,
         pathCopies: [],
         intersection: cor,
         endPose,
+        complexTerminalPose: endPose,
         cor,
+        complexVc: cor,
         corDistance,
         rearDistance: corDistance,
-        bodyAlignment
+        bodyAlignment,
+        theta: Number(endPose.theta) || 0,
+        steeredWheelHeadingChange: Number(endPose.theta) || 0,
+        terminalRadius,
+        steeredWheelTravelDistance: curveLength
       };
     }
 
@@ -1266,11 +1281,19 @@
       const alignmentScore = scoreVehicleBisectorAlignment(evaluation, geometry);
       const bodyAngleError = alignmentScore.perpendicularError;
       const score = alignmentScore.score;
+      const terminalRadius = getDerivedTerminalRadius(evaluation.endPose, evaluation.cor, Number(geometry?.radius) || 0);
       return {
         ...evaluation,
         inner,
+        slew: Number(evaluation.slew ?? candidateSl) || 0,
         headingChange: inner.headingChange,
         curveLength: inner.curveLength,
+        theta: Number(evaluation.theta ?? evaluation.endPose?.theta) || 0,
+        steeredWheelHeadingChange: Number(evaluation.steeredWheelHeadingChange ?? evaluation.endPose?.theta) || 0,
+        complexTerminalPose: evaluation.complexTerminalPose || evaluation.endPose || null,
+        complexVc: evaluation.complexVc || evaluation.cor || null,
+        terminalRadius,
+        steeredWheelTravelDistance: Number(evaluation.steeredWheelTravelDistance ?? evaluation.curveLength) || 0,
         bodyAngleError,
         lineDistanceError: alignmentScore.lineError,
         normalizedLineDistanceError: alignmentScore.normalizedLineError,
@@ -1519,11 +1542,18 @@
       const bodyTolerance = Number.isFinite(Number(options.bodyTolerance)) ? Math.abs(Number(options.bodyTolerance)) : 1e-6;
       const corAligned = Number.isFinite(evaluation.corDistance) && Math.abs(evaluation.corDistance) <= tolerance;
       const bodyAligned = Number.isFinite(evaluation.bodyAlignment) && Math.abs(evaluation.bodyAlignment) <= bodyTolerance;
+      const complexTerminalPose = evaluation.complexTerminalPose || evaluation.endPose || null;
+      const complexVc = evaluation.complexVc || evaluation.cor || null;
+      const terminalRadius = getDerivedTerminalRadius(complexTerminalPose, complexVc, Number(geometry?.radius) || 0);
       return {
         success: Boolean(corAligned && bodyAligned),
         sl: Math.max(0, solved.x),
+        slew: Math.max(0, solved.x),
         headingChange: Math.max(0, Number(evaluation.headingChange) || 0),
+        theta: Math.max(0, Number(evaluation.theta ?? complexTerminalPose?.theta) || 0),
+        steeredWheelHeadingChange: Math.max(0, Number(evaluation.steeredWheelHeadingChange ?? complexTerminalPose?.theta) || 0),
         curveLength: Math.max(0, Number(evaluation.curveLength) || 0),
+        steeredWheelTravelDistance: Math.max(0, Number(evaluation.steeredWheelTravelDistance ?? evaluation.curveLength) || 0),
         error: evaluation.score,
         reason: corAligned && bodyAligned ? "converged" : "alignment-mismatch",
         initialSl: startSl,
@@ -1532,6 +1562,9 @@
         intersection: evaluation.intersection,
         evaluation,
         inner: evaluation.inner || null,
+        complexTerminalPose,
+        complexVc,
+        terminalRadius,
         iterations: solved.evaluations,
         value: evaluation.score,
         rearDistance: evaluation.rearDistance,
@@ -2266,6 +2299,11 @@
         const bisector = getSimpleArcBisectorGeometry(arc);
         const terminalPose = parsed.terminalPose || null;
         const vc = parsed.vc || null;
+        const complexTerminalPose = parsed.complexTerminalPose || terminalPose;
+        const complexVc = parsed.complexVc || vc;
+        const terminalRadius = Number.isFinite(Number(parsed.terminalRadius))
+          ? Number(parsed.terminalRadius)
+          : getDerivedTerminalRadius(complexTerminalPose, complexVc, Number(parsed.radius) || 0);
         const simpleCurve = parsed.simpleCurve || (terminalPose && vc
           ? buildSimpleCurveGeometry({ ...parsed, terminalPose, vc, bisector })
           : null);
@@ -2278,9 +2316,18 @@
           terminalPose,
           finalPose,
           vc,
+          complexTerminalPose,
+          complexVc,
+          terminalRadius,
           bisector,
           pathPoints,
           simpleCurve,
+          slew: Number(parsed.slew ?? parsed.sl) || 0,
+          theta: Number(parsed.theta ?? terminalPose?.theta) || 0,
+          steeredWheelHeadingChange: Number(parsed.steeredWheelHeadingChange ?? parsed.theta ?? terminalPose?.theta) || 0,
+          steeredWheelTravelDistance: Number(parsed.steeredWheelTravelDistance)
+            || Number(parsed.curveLength)
+            || 0,
           complexCurveLength: Number(parsed.complexCurveLength) || Number(parsed.curveLength) || 0,
           simpleCurveLength: Number(simpleCurve?.arcLength) || 0,
           totalTravelDistance: Number(parsed.totalTravelDistance)
@@ -2309,16 +2356,24 @@
           arcLength: Number(arc?.arcLength) || 0,
           s: Number(arc?.arcLength) || 0,
           sl: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
+          slew: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
           turnAngle: Number(arc?.turnAngle) || 0,
           finalHeading: 0,
+          theta: 0,
+          steeredWheelHeadingChange: 0,
           positionError: NaN,
           headingError: NaN,
           headingNormalAngle: NaN,
           headingNormalError: NaN,
           headingNormalSatisfied: false,
           terminalPose: null,
+          complexTerminalPose: null,
           terminalCoord: null,
+          vc: null,
+          complexVc: null,
+          terminalRadius: NaN,
           spTravelDistance: 0,
+          steeredWheelTravelDistance: 0,
           pathPoints: [],
           passes: []
         };
@@ -2331,24 +2386,31 @@
         arcLength: Number(arc?.arcLength) || 0,
         s: Number(arc?.arcLength) || 0,
         sl: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
+        slew: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
         turnAngle: Number(arc?.turnAngle) || 0,
         finalHeading: 0,
+        theta: 0,
+        steeredWheelHeadingChange: 0,
         curveLength: 0,
         complexCurveLength: 0,
         simpleCurveLength: 0,
         totalTravelDistance: 0,
         spTravelDistance: 0,
+        steeredWheelTravelDistance: 0,
         positionError: NaN,
         headingError: NaN,
         headingNormalAngle: NaN,
         headingNormalError: NaN,
         headingNormalSatisfied: false,
         vc: null,
+        complexVc: null,
         terminalPose: null,
+        complexTerminalPose: null,
         finalPose: null,
         terminalCoord: null,
         complexCurve: null,
         simpleCurve: null,
+        terminalRadius: NaN,
         pathPoints: [],
         bisector: null,
         steerMax: Number(arc?.steerMax) || 0,
@@ -2666,7 +2728,7 @@
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText("Complex curve", centerS.x + 8, centerS.y - 24);
-      ctx.fillText("Cor", centerS.x + 8, centerS.y - 8);
+      ctx.fillText("VCor", centerS.x + 8, centerS.y - 8);
       ctx.fillText(`Radius = ${Math.abs(arc.radius).toFixed(2)}, Al = ${(arc.arcLength).toFixed(2)}`, endS.x + 10, endS.y - 8);
       ctx.restore();
     }
@@ -2721,7 +2783,7 @@
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText("Simple curve", startS.x + 8, startS.y + 14);
-      ctx.fillText("VC", centerS.x + 8, centerS.y - 8);
+      ctx.fillText("CCor", centerS.x + 8, centerS.y - 8);
       ctx.fillText(`Final Rp`, endS.x + 10, endS.y - 8);
       ctx.fillText(`R = ${Math.abs(simpleCurve.radius).toFixed(2)}, L = ${(simpleCurve.arcLength).toFixed(2)}`, endS.x + 10, endS.y + 10);
 
@@ -2922,7 +2984,7 @@
       for (let i = 0; i < combined.length; i += 1) {
         const entry = combined[i];
         const t = total === 0 ? 1 : i / total;
-        const alpha = 0.22 + 0.68 * Math.pow(t, 0.9);
+        const alpha = 0.30 + 0.60 * Math.pow(t, 0.9);
         drawVehicleInstance(entry.copy, {
           alpha,
           bodyWidth: entry.bodyWidth,
@@ -3109,12 +3171,12 @@
         return;
       }
 
-      const lines = ["#  Sl       s        posErr    headErr   terminal pose"];
+      const lines = ["#  Slew     s        posErr    headErr   terminal pose"];
       passes.forEach((pass, index) => {
         const candidate = pass?.steerBest || pass?.pathBest || null;
         const pathLength = Number(candidate?.pathLength ?? pass?.pathCenter);
         const finalSteer = Number(candidate?.finalSteer ?? pass?.steerCenter);
-        const sl = Number.isFinite(pathLength) && Math.abs(pathLength) > 1e-12
+        const slew = Number.isFinite(pathLength) && Math.abs(pathLength) > 1e-12
           ? finalSteer / pathLength
           : NaN;
         const positionError = Number(candidate?.positionError);
@@ -3125,7 +3187,7 @@
           : "(NaN,NaN,NaN)";
         lines.push([
           String(index + 1).padStart(2, " "),
-          formatDebugNumber(sl).padStart(8, " "),
+          formatDebugNumber(slew).padStart(8, " "),
           formatDebugNumber(pathLength).padStart(8, " "),
           formatDebugNumber(positionError).padStart(8, " "),
           formatDebugNumber(headingError).padStart(8, " "),
@@ -3140,15 +3202,25 @@
       if (!dependentListDirty) return;
       dependentList.innerHTML = "";
       const solution = state.simpleArcSolution || solveSimpleArc();
-      const terminalCor = solution?.terminalCoord || null;
-      const travelDistance = Number(solution?.totalTravelDistance)
-        || Number(solution?.simpleCurveLength)
-        || Number(solution?.spTravelDistance)
-        || Number(solution?.curveLength)
-        || 0;
       const entries = [{
-        label: "Cor",
-        value: formatCoordSummary(terminalCor, travelDistance),
+        label: "Complex terminal",
+        value: formatComplexTerminalSummary(solution),
+        full: true
+      }, {
+        label: "VCor",
+        value: formatVcSummary(solution),
+        full: true
+      }, {
+        label: "Travel",
+        value: formatFixed3(Number(solution?.steeredWheelTravelDistance)
+          || Number(solution?.curveLength)
+          || 0),
+        full: true
+      }, {
+        label: "Radius",
+        value: formatFixed3(Number(solution?.terminalRadius)
+          || Number(solution?.radius)
+          || 0),
         full: true
       }, {
         label: "Errors",
@@ -3156,7 +3228,7 @@
         full: true
       }, ...(solution?.edgeCase ? [{
         label: "Status",
-        value: "Edge case: steer max reached before Cor could hit the bisector.",
+        value: "Edge case: steer max reached before VCor could hit the bisector.",
         full: true
       }] : [])];
       for (const entry of entries) {
@@ -3202,6 +3274,21 @@
     function getSolverInitialSl(value) {
       const numeric = Number(value);
       return Number.isFinite(numeric) && numeric > 0.1 ? numeric : Math.PI / 4;
+    }
+
+    function getDerivedTerminalRadius(terminalPose, vc, fallbackRadius = NaN) {
+      const poseX = Number(terminalPose?.x);
+      const poseY = Number(terminalPose?.y);
+      const vcX = Number(vc?.x);
+      const vcY = Number(vc?.y);
+      if (Number.isFinite(poseX) && Number.isFinite(poseY) && Number.isFinite(vcX) && Number.isFinite(vcY)) {
+        const distance = Math.hypot(poseX - vcX, poseY - vcY);
+        if (Number.isFinite(distance) && distance > 0) {
+          return distance;
+        }
+      }
+      const numericFallback = Number(fallbackRadius);
+      return Number.isFinite(numericFallback) ? Math.abs(numericFallback) : NaN;
     }
 
     function getCurveLengthFromGeometry(geometry = state.vehicle) {
@@ -3328,6 +3415,36 @@
       const coordText = `(${formatFixed3(coord.X)}, ${formatFixed3(coord.Y)}, ${formatFixed3(coord.Psi)})`;
       if (!Number.isFinite(Number(pathLength))) return coordText;
       return `${coordText} ${formatFixed3(pathLength)}`;
+    }
+
+    function formatPointSummary(point) {
+      if (!point) return "NaN";
+      return `(${formatFixed3(point.x)}, ${formatFixed3(point.y)})`;
+    }
+
+    function formatComplexTerminalSummary(solution) {
+      const pose = solution?.complexTerminalPose || solution?.terminalPose || null;
+      if (!pose) return "NaN";
+      const poseText = `(${formatFixed3(pose.x)}, ${formatFixed3(pose.y)}, ${formatFixed3(pose.angle)})`;
+      const theta = Number.isFinite(Number(solution?.theta ?? pose.theta))
+        ? ` theta ${formatFixed3(Number(solution?.theta ?? pose.theta))}`
+        : "";
+      const radius = Number.isFinite(Number(solution?.terminalRadius))
+        ? Number(solution.terminalRadius)
+        : Number(pose.radius);
+      const radiusText = Number.isFinite(radius)
+        ? ` r ${formatFixed3(radius)}`
+        : "";
+      return `${poseText}${theta}${radiusText}`;
+    }
+
+    function formatVcSummary(solution) {
+      const vc = solution?.complexVc || solution?.vc || null;
+      if (!vc) return "NaN";
+      const radius = Number.isFinite(Number(solution?.terminalRadius))
+        ? ` r ${formatFixed3(Number(solution.terminalRadius))}`
+        : "";
+      return `${formatPointSummary(vc)}${radius}`;
     }
 
     function formatErrorSummary(solution) {
@@ -3590,8 +3707,11 @@
         x: Number(terminalPose.x) || 0,
         y: Number(terminalPose.y) || 0,
         angle: Number(terminalPose.angle) || 0,
-        theta: Number(solved?.sl) || 0
+        theta: Number(solved?.theta ?? solved?.sl) || 0
       } : null;
+      const complexTerminalPose = evaluation?.complexTerminalPose || terminalPoseForCurve || terminalPose || null;
+      const complexVc = evaluation?.complexVc || vc || null;
+      const terminalRadius = getDerivedTerminalRadius(complexTerminalPose, complexVc, Number(arc.radius) || 0);
       const simpleCurve = buildSimpleCurveGeometry({
         terminalPose: terminalPoseForCurve,
         vc,
@@ -3621,11 +3741,14 @@
         radius: Number(arc.radius) || 0,
         arcLength: Number(arc.arcLength) || 0,
         s: Number(solved?.curveLength) || 0,
+        slew: Number(solved?.slew ?? solved?.sl) || 0,
         sl: Number(solved?.sl) || 0,
         turnAngle: Number(solved?.headingChange) || 0,
+        theta: Number(solved?.theta ?? terminalPoseForCurve?.theta) || 0,
         finalHeading: Number(finalPose?.angle) || 0,
         curveLength: Number(solved?.curveLength) || 0,
         complexCurveLength: Number(solved?.curveLength) || 0,
+        steeredWheelTravelDistance: Number(solved?.steeredWheelTravelDistance ?? solved?.curveLength) || 0,
         simpleCurveLength: Number(simpleCurve?.arcLength) || 0,
         totalTravelDistance: (Number(solved?.curveLength) || 0) + (Number(simpleCurve?.arcLength) || 0),
         spTravelDistance: Number(solved?.curveLength) || 0,
@@ -3637,6 +3760,9 @@
         vc,
         terminalPose: finalPose,
         finalPose,
+        complexTerminalPose,
+        complexVc,
+        terminalRadius,
         terminalCoord: finalPose ? createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, "Rp", "#7dd3fc") : null,
         complexCurve: {
           valid: Boolean(arc?.valid),

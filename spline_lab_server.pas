@@ -370,18 +370,24 @@ begin
         '"arcLength":' + JsonFloat(Solution.ArcLength) + ',' +
         '"s":' + JsonFloat(Solution.S) + ',' +
         '"sl":' + JsonFloat(Solution.Sl) + ',' +
+        '"slew":' + JsonFloat(Solution.Sl) + ',' +
         '"turnAngle":' + JsonFloat(Solution.TurnAngle) + ',' +
         '"finalHeading":' + JsonFloat(Solution.FinalHeading) + ',' +
+        '"theta":' + JsonFloat(Solution.TerminalPose.Theta) + ',' +
         '"curveLength":' + JsonFloat(Solution.CurveLength) + ',' +
+        '"steeredWheelTravelDistance":' + JsonFloat(Solution.CurveLength) + ',' +
         '"positionError":' + JsonFloat(Solution.PositionError) + ',' +
         '"headingError":' + JsonFloat(Solution.HeadingError) + ',' +
         '"headingNormalAngle":' + JsonFloat(Solution.HeadingNormalAngle) + ',' +
         '"headingNormalError":' + JsonFloat(Solution.HeadingNormalError) + ',' +
         '"headingNormalSatisfied":' + JsonBool(Solution.HeadingNormalSatisfied) + ',' +
         '"vc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
+        '"complexVc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
         '"terminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
+        '"complexTerminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
         '"finalPose":' + JsonPose(Solution.FinalPose) + ',' +
         '"terminalCoord":' + JsonCoord(Solution.TerminalCoord) + ',' +
+        '"terminalRadius":' + JsonFloat(Sqrt(Sqr(Solution.Vc.X - Solution.TerminalPose.X) + Sqr(Solution.Vc.Y - Solution.TerminalPose.Y))) + ',' +
         '"pathPoints":' + JsonPathPoints(Solution.PathPoints) + ',' +
         '"passes":' + JsonTracePasses(Solution.Passes) +
       '}'
