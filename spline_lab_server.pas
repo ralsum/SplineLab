@@ -5,16 +5,22 @@ program SplineLabServer;
 uses
   Classes,
   SysUtils,
+  StrUtils,
   fphttpserver,
-  httpdefs;
+  httpdefs,
+  PoseSolver,
+  ServerSimpleArcSolver;
 
 type
   TStaticServer = class
   private
     FBaseDir: string;
     function ResolveRequestPath(const URI: string): string;
+    function ResolveQueryValue(const URI, Name: string): string;
+    function ParseQueryFloat(const URI, Name: string; const Default: Double): Double;
     function GuessMimeType(const FileName: string): string;
     procedure SendTextResponse(var Response: TFPHTTPConnectionResponse; const Code: Integer; const CodeText, Body: string);
+    procedure SendJsonResponse(var Response: TFPHTTPConnectionResponse; const Code: Integer; const Body: string);
     procedure RequestHandler(Sender: TObject; var Request: TFPHTTPConnectionRequest; var Response: TFPHTTPConnectionResponse);
   public
     constructor Create(const ABaseDir: string);
@@ -44,6 +50,140 @@ begin
     Delete(Result, 1, 1);
 end;
 
+function JsonFloat(const Value: Double): string;
+var
+  FS: TFormatSettings;
+begin
+  FS := DefaultFormatSettings;
+  FS.DecimalSeparator := '.';
+  Result := FormatFloat('0.###############', Value, FS);
+end;
+
+function JsonBool(const Value: Boolean): string;
+begin
+  if Value then
+    Result := 'true'
+  else
+    Result := 'false';
+end;
+
+function JsonString(const Value: string): string;
+var
+  I: Integer;
+  Ch: Char;
+begin
+  Result := '"';
+  for I := 1 to Length(Value) do
+  begin
+    Ch := Value[I];
+    case Ch of
+      '"': Result := Result + '\"';
+      '\': Result := Result + '\\';
+      #8: Result := Result + '\b';
+      #9: Result := Result + '\t';
+      #10: Result := Result + '\n';
+      #12: Result := Result + '\f';
+      #13: Result := Result + '\r';
+    else
+      Result := Result + Ch;
+    end;
+  end;
+  Result := Result + '"';
+end;
+
+function JsonPoint2D(const X, Y: Double): string;
+begin
+  Result := '{"x":' + JsonFloat(X) + ',"y":' + JsonFloat(Y) + '}';
+end;
+
+function JsonPose(const Pose: TVehiclePose): string;
+begin
+  Result := '{' +
+    '"x":' + JsonFloat(Pose.X) + ',' +
+    '"y":' + JsonFloat(Pose.Y) + ',' +
+    '"angle":' + JsonFloat(Pose.Angle) + ',' +
+    '"theta":' + JsonFloat(Pose.Theta) + ',' +
+    '"radius":' + JsonFloat(Pose.Radius) + ',' +
+    '"curveLength":' + JsonFloat(Pose.CurveLength) +
+  '}';
+end;
+
+function JsonCoord(const Coord: TServerCoord): string;
+begin
+  Result := '{' +
+    '"X":' + JsonFloat(Coord.X) + ',' +
+    '"Y":' + JsonFloat(Coord.Y) + ',' +
+    '"Psi":' + JsonFloat(Coord.Psi) + ',' +
+    '"length":' + JsonFloat(Coord.Length) + ',' +
+    '"label":' + JsonString(Coord.LabelText) + ',' +
+    '"color":' + JsonString(Coord.Color) +
+  '}';
+end;
+
+function JsonPathPoint(const Point: TLinearSteerPoint): string;
+begin
+  Result := '{' +
+    '"x":' + JsonFloat(Point.X) + ',' +
+    '"y":' + JsonFloat(Point.Y) + ',' +
+    '"heading":' + JsonFloat(Point.Heading) + ',' +
+    '"theta":' + JsonFloat(Point.Theta) +
+  '}';
+end;
+
+function JsonPathPoints(const Points: array of TLinearSteerPoint): string;
+var
+  I: Integer;
+begin
+  Result := '[';
+  for I := Low(Points) to High(Points) do
+  begin
+    if I > Low(Points) then
+      Result := Result + ',';
+    Result := Result + JsonPathPoint(Points[I]);
+  end;
+  Result := Result + ']';
+end;
+
+function JsonTraceCandidate(const Candidate: TTraceCandidate): string;
+begin
+  Result := '{' +
+    '"finalSteer":' + JsonFloat(Candidate.FinalSteer) + ',' +
+    '"pathLength":' + JsonFloat(Candidate.PathLength) + ',' +
+    '"positionError":' + JsonFloat(Candidate.PositionError) + ',' +
+    '"headingError":' + JsonFloat(Candidate.HeadingError) + ',' +
+    '"headingNormalError":' + JsonFloat(Candidate.HeadingNormalError) + ',' +
+    '"headingNormalSatisfied":' + JsonBool(Candidate.HeadingNormalSatisfied) +
+  '}';
+end;
+
+function JsonTracePass(const Pass: TTracePass): string;
+begin
+  Result := '{' +
+    '"pass":' + IntToStr(Pass.Pass) + ',' +
+    '"steerCenter":' + JsonFloat(Pass.SteerCenter) + ',' +
+    '"pathCenter":' + JsonFloat(Pass.PathCenter) + ',' +
+    '"steerSpan":' + JsonFloat(Pass.SteerSpan) + ',' +
+    '"pathSpan":' + JsonFloat(Pass.PathSpan) + ',' +
+    '"terminalPose":' + JsonPose(Pass.TerminalPose) + ',' +
+    '"pathBest":' + IfThen(Pass.PathBestValid, JsonTraceCandidate(Pass.PathBest), 'null') + ',' +
+    '"steerBest":' + IfThen(Pass.SteerBestValid, JsonTraceCandidate(Pass.SteerBest), 'null') +
+  '}';
+end;
+
+function JsonTracePasses(const Passes: array of TTracePass): string;
+var
+  I: Integer;
+begin
+  Result := '[';
+  for I := Low(Passes) to High(Passes) do
+  begin
+    if I > Low(Passes) then
+      Result := Result + ',';
+    Result := Result + JsonTracePass(Passes[I]);
+  end;
+  Result := Result + ']';
+end;
+
 constructor TStaticServer.Create(const ABaseDir: string);
 begin
   inherited Create;
@@ -65,6 +205,50 @@ begin
   AbsPath := ExpandFileName(FBaseDir + RelPath);
 
   Result := AbsPath;
+end;
+
+function TStaticServer.ResolveQueryValue(const URI, Name: string): string;
+var
+  Query, Token: string;
+  TokenPos, ValueStart, ValueEnd: SizeInt;
+begin
+  Result := '';
+  Query := URI;
+  TokenPos := Pos('?', Query);
+  if TokenPos > 0 then
+    Query := Copy(Query, TokenPos + 1, MaxInt)
+  else
+    Exit;
+  Token := Name + '=';
+  TokenPos := Pos(Token, Query);
+  while TokenPos > 0 do
+  begin
+    if (TokenPos = 1) or (Query[TokenPos - 1] = '&') then
+    begin
+      ValueStart := TokenPos + Length(Token);
+      ValueEnd := ValueStart;
+      while (ValueEnd <= Length(Query)) and (Query[ValueEnd] <> '&') do
+        Inc(ValueEnd);
+      Result := Copy(Query, ValueStart, ValueEnd - ValueStart);
+      Exit;
+    end;
+    TokenPos := PosEx(Token, Query, TokenPos + Length(Token));
+  end;
+end;
+
+function TStaticServer.ParseQueryFloat(const URI, Name: string; const Default: Double): Double;
+var
+  Raw: string;
+  FS: TFormatSettings;
+begin
+  Raw := ResolveQueryValue(URI, Name);
+  if Raw = '' then
+    Exit(Default);
+
+  FS := DefaultFormatSettings;
+  FS.DecimalSeparator := '.';
+  if not TryStrToFloat(Raw, Result, FS) then
+    Result := Default;
 end;
 
 function TStaticServer.GuessMimeType(const FileName: string): string;
@@ -108,15 +292,100 @@ begin
   Response.FreeContentStream := True;
 end;
 
+procedure TStaticServer.SendJsonResponse(var Response: TFPHTTPConnectionResponse; const Code: Integer; const Body: string);
+var
+  Stream: TStringStream;
+begin
+  Stream := TStringStream.Create(Body);
+  Response.Code := Code;
+  Response.CodeText := 'OK';
+  Response.ContentType := 'application/json; charset=utf-8';
+  Response.ContentStream := Stream;
+  Response.FreeContentStream := True;
+end;
+
 procedure TStaticServer.RequestHandler(Sender: TObject; var Request: TFPHTTPConnectionRequest; var Response: TFPHTTPConnectionResponse);
 var
   FilePath, EffectivePath: string;
   Stream: TFileStream;
+  BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius: Double;
+  Pose: TVehiclePose;
+  ArcRadius, ArcDeltaPsi, ArcSteerMax, InitialSl: Double;
+  Solution: TServerSimpleArcSolution;
 begin
   if (Request.Method <> 'GET') and (Request.Method <> 'HEAD') then
   begin
     Response.CustomHeaders.Values['Allow'] := 'GET, HEAD';
     SendTextResponse(Response, 405, 'Method Not Allowed', 'Only GET and HEAD are supported.' + LineEnding);
+    Exit;
+  end;
+
+  if SameText(Copy(StripQuery(Request.URI), 1, Length('/api/sample-pose')), '/api/sample-pose') then
+  begin
+    BaseX := ParseQueryFloat(Request.URI, 'baseX', 0);
+    BaseY := ParseQueryFloat(Request.URI, 'baseY', 0);
+    BaseAngle := ParseQueryFloat(Request.URI, 'baseAngle', 0);
+    Distance := ParseQueryFloat(Request.URI, 'distance', 0);
+    Slew := ParseQueryFloat(Request.URI, 'slew', 0);
+    CurveLength := ParseQueryFloat(Request.URI, 'curveLength', 0);
+    Radius := ParseQueryFloat(Request.URI, 'radius', 0);
+    Pose := SampleVehiclePoseForSlew(BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius);
+    SendJsonResponse(
+      Response,
+      200,
+      '{' +
+        '"ok":true,' +
+        '"pose":{' +
+          '"x":' + JsonFloat(Pose.X) + ',' +
+          '"y":' + JsonFloat(Pose.Y) + ',' +
+          '"angle":' + JsonFloat(Pose.Angle) + ',' +
+          '"theta":' + JsonFloat(Pose.Theta) + ',' +
+          '"radius":' + JsonFloat(Pose.Radius) + ',' +
+          '"curveLength":' + JsonFloat(Pose.CurveLength) +
+        '}' +
+      '}'
+    );
+    Exit;
+  end;
+
+  if SameText(Copy(StripQuery(Request.URI), 1, Length('/api/solve-simple-arc')), '/api/solve-simple-arc') then
+  begin
+    ArcRadius := ParseQueryFloat(Request.URI, 'radius', 1);
+    ArcDeltaPsi := ParseQueryFloat(Request.URI, 'deltaPsi', Pi / 2);
+    ArcSteerMax := ParseQueryFloat(Request.URI, 'steerMax', Pi / 2);
+    InitialSl := ParseQueryFloat(Request.URI, 'initialSl', 0.01);
+    BaseX := ParseQueryFloat(Request.URI, 'vehicleX', 0);
+    BaseY := ParseQueryFloat(Request.URI, 'vehicleY', 0);
+    BaseAngle := ParseQueryFloat(Request.URI, 'vehicleAngle', 0);
+    Solution := SolveSimpleArcServer(ArcRadius, ArcDeltaPsi, ArcSteerMax, InitialSl, BaseX, BaseY, BaseAngle);
+    SendJsonResponse(
+      Response,
+      200,
+      '{' +
+        '"ok":true,' +
+        '"success":' + JsonBool(Solution.Success) + ',' +
+        '"edgeCase":' + JsonBool(Solution.EdgeCase) + ',' +
+        '"edgeCaseReason":' + JsonString(Solution.EdgeCaseReason) + ',' +
+        '"radius":' + JsonFloat(Solution.Radius) + ',' +
+        '"arcLength":' + JsonFloat(Solution.ArcLength) + ',' +
+        '"s":' + JsonFloat(Solution.S) + ',' +
+        '"sl":' + JsonFloat(Solution.Sl) + ',' +
+        '"turnAngle":' + JsonFloat(Solution.TurnAngle) + ',' +
+        '"finalHeading":' + JsonFloat(Solution.FinalHeading) + ',' +
+        '"curveLength":' + JsonFloat(Solution.CurveLength) + ',' +
+        '"positionError":' + JsonFloat(Solution.PositionError) + ',' +
+        '"headingError":' + JsonFloat(Solution.HeadingError) + ',' +
+        '"headingNormalAngle":' + JsonFloat(Solution.HeadingNormalAngle) + ',' +
+        '"headingNormalError":' + JsonFloat(Solution.HeadingNormalError) + ',' +
+        '"headingNormalSatisfied":' + JsonBool(Solution.HeadingNormalSatisfied) + ',' +
+        '"vc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
+        '"terminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
+        '"finalPose":' + JsonPose(Solution.FinalPose) + ',' +
+        '"terminalCoord":' + JsonCoord(Solution.TerminalCoord) + ',' +
+        '"pathPoints":' + JsonPathPoints(Solution.PathPoints) + ',' +
+        '"passes":' + JsonTracePasses(Solution.Passes) +
+      '}'
+    );
     Exit;
   end;
 

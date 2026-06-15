@@ -10,6 +10,11 @@ if(WIN32)
   add_executable(WSEditor WIN32
     src/main.cpp
   )
+  target_link_options(WSEditor PRIVATE
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-municode>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-static-libgcc>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-static-libstdc++>
+  )
 else()
   add_executable(WSEditor
     src/main_cli.cpp

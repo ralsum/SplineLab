@@ -152,7 +152,7 @@ function EvaluateVehicleCombinedAlignment(
   const CandidateSl: Double;
   const VehicleVector: TVehicleVector;
   const Geometry: TArcGeometry;
-  out Inner: THeadingChangeSearchResult
+  var Inner: THeadingChangeSearchResult
 ): TAlignmentEvaluation; overload;
 
 function EvaluateVehicleCombinedAlignment(
@@ -841,8 +841,8 @@ function EvaluateVehicleCombinedAlignment(
 ): TAlignmentEvaluation;
 var
   Inner: THeadingChangeSearchResult;
-  BodyAlignmentValue: Double;
 begin
+  Inner := Default(THeadingChangeSearchResult);
   Result := EvaluateVehicleCombinedAlignment(CandidateSl, VehicleVector, Geometry, Inner);
 end;
 
@@ -850,10 +850,10 @@ function EvaluateVehicleCombinedAlignment(
   const CandidateSl: Double;
   const VehicleVector: TVehicleVector;
   const Geometry: TArcGeometry;
-  out Inner: THeadingChangeSearchResult
+  var Inner: THeadingChangeSearchResult
 ): TAlignmentEvaluation;
 var
-  BodyAlignmentValue: Double;
+  Score: TAlignmentScore;
 begin
   Inner := SolveVehicleHeadingChangeForBisectorAlignment(CandidateSl, VehicleVector, Geometry);
   Result := Inner.Evaluation;
@@ -867,9 +867,9 @@ begin
   end;
   if Result.Geometry.Valid and IsFiniteDouble(Result.EndPose.X) and IsFiniteDouble(Result.EndPose.Y) then
   begin
-    BodyAlignmentValue := Result.BodyAlignment;
-    Result.BodyAngleError := ArcSin(ClampDouble(BodyAlignmentValue, -1, 1));
-    Result.Score := Sqr(Result.BodyAngleError);
+    Score := ScoreVehicleBisectorAlignment(Result, Geometry);
+    Result.BodyAngleError := Score.PerpendicularError;
+    Result.Score := Score.Score;
   end;
 end;
 
