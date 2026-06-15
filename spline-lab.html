@@ -87,7 +87,7 @@
     .workspace {
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 364px;
+      grid-template-columns: minmax(0, 1fr) 656px;
       gap: 14px;
       padding: 0 20px 20px;
     }
@@ -446,6 +446,7 @@
         vehicleCopies: [],
         simpleVehicleCopies: [],
         simpleArcSolution: null,
+        simpleArcTrace: null,
         selectedId: null,
         vectors: []
       };
@@ -512,11 +513,12 @@
                     : defaultState.arc.deltaPsi)))
           },
           Vehicles: normalizedVehicles,
-          vehicleCopies: [],
-          simpleVehicleCopies: [],
-          simpleArcSolution: null,
-          vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : defaultState.vectors),
-        };
+        vehicleCopies: [],
+        simpleVehicleCopies: [],
+        simpleArcSolution: null,
+        simpleArcTrace: null,
+        vectors: normalizeVectors(Array.isArray(parsed.vectors) ? parsed.vectors : defaultState.vectors),
+      };
       } catch {
         return null;
       }
@@ -3196,14 +3198,39 @@
         return;
       }
 
-      const lines = ["#  Slew     s        posErr    headErr   terminal pose"];
+      const lines = ["#  pass  steerCtr  pathCtr  steerGuess  pathGuess  posErr    headErr   terminal pose"];
       passes.forEach((pass, index) => {
-        const candidate = pass?.steerBest || pass?.pathBest || null;
-        const pathLength = Number(candidate?.pathLength ?? pass?.pathCenter);
-        const finalSteer = Number(candidate?.finalSteer ?? pass?.steerCenter);
-        const slew = Number.isFinite(pathLength) && Math.abs(pathLength) > 1e-12
-          ? finalSteer / pathLength
-          : NaN;
+        const candidates = [pass?.steerBest, pass?.pathBest].filter(Boolean);
+        const candidate = candidates.reduce((best, current) => {
+          if (!best) return current;
+          const bestScore = [
+            best?.positionError,
+            best?.headingError,
+            best?.pathLength,
+            best?.finalSteer
+          ].reduce((count, value) => count + (Number.isFinite(Number(value)) ? 1 : 0), 0);
+          const currentScore = [
+            current?.positionError,
+            current?.headingError,
+            current?.pathLength,
+            current?.finalSteer
+          ].reduce((count, value) => count + (Number.isFinite(Number(value)) ? 1 : 0), 0);
+          return currentScore > bestScore ? current : best;
+        }, null);
+        const steerCenter = Number(pass?.steerCenter);
+        const pathCenter = Number(pass?.pathCenter);
+        const steerGuess = Number(
+          candidate?.finalSteer
+            ?? pass?.steerBest?.finalSteer
+            ?? pass?.pathBest?.finalSteer
+            ?? pass?.steerCenter
+        );
+        const pathGuess = Number(
+          candidate?.pathLength
+            ?? pass?.pathBest?.pathLength
+            ?? pass?.steerBest?.pathLength
+            ?? pass?.pathCenter
+        );
         const positionError = Number(candidate?.positionError);
         const headingError = Number(candidate?.headingError);
         const terminalPose = pass?.terminalPose || candidate?.result?.terminalPose || candidate?.terminalPose || null;
@@ -3211,9 +3238,11 @@
           ? `(${formatDebugNumber(terminalPose.x)},${formatDebugNumber(terminalPose.y)},${formatDebugNumber(terminalPose.angle)})`
           : "(NaN,NaN,NaN)";
         lines.push([
-          String(index + 1).padStart(2, " "),
-          formatDebugNumber(slew).padStart(8, " "),
-          formatDebugNumber(pathLength).padStart(8, " "),
+          formatDebugNumber(Number(pass?.pass ?? index + 1)).padStart(4, " "),
+          formatDebugNumber(steerCenter).padStart(8, " "),
+          formatDebugNumber(pathCenter).padStart(8, " "),
+          formatDebugNumber(steerGuess).padStart(10, " "),
+          formatDebugNumber(pathGuess).padStart(8, " "),
           formatDebugNumber(positionError).padStart(8, " "),
           formatDebugNumber(headingError).padStart(8, " "),
           terminalPoseText
@@ -3266,7 +3295,7 @@
         `;
         dependentList.appendChild(control);
       }
-      updateDebugData(solution);
+      updateDebugData(state.simpleArcTrace || solveSimpleArc());
       dependentListDirty = false;
     }
 
@@ -3810,6 +3839,7 @@
           ? solved.passes
           : (solved?.evaluation ? [solved.evaluation] : [])
       };
+      state.simpleArcTrace = solveSimpleArc();
       state.simpleArcSolution = result;
       state.arc.deltaPsi = getSimpleArcDeltaPsi();
       state.arc.angle = state.arc.deltaPsi;
