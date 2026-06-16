@@ -2731,7 +2731,7 @@
         const bisectorRayEndS = extendRayToCanvasEdge(centerS, bisectorEndS);
         ctx.save();
         ctx.setLineDash([6, 6]);
-        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+        ctx.strokeStyle = "rgba(249,115,22,0.9)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(centerS.x, centerS.y);
@@ -2917,56 +2917,8 @@
     }
 
     function drawVehicleCorToBisectorNormal() {
-      const solution = state.simpleArcSolution || solveSimpleArc();
-      if (!solution?.success || !solution?.vc || !solution?.bisector?.valid) return;
-
-      const vcSource = solution?.complexCurve?.vc || solution?.vc || null;
-      const vc = {
-        x: Number(vcSource?.x) || 0,
-        y: Number(vcSource?.y) || 0
-      };
-      const bisector = solution.bisector;
-      const center = {
-        x: Number(bisector.center?.x) || 0,
-        y: Number(bisector.center?.y) || 0
-      };
-      const normalDir = bisector.bisectorNormal || {
-        x: -(Number(bisector.bisectorDir?.y) || 0),
-        y: Number(bisector.bisectorDir?.x) || 0
-      };
-      const normalLength = Math.hypot(normalDir.x, normalDir.y) || 1;
-      const unitNormal = {
-        x: normalDir.x / normalLength,
-        y: normalDir.y / normalLength
-      };
-      const offset = {
-        x: vc.x - center.x,
-        y: vc.y - center.y
-      };
-      const projectionDistance = offset.x * unitNormal.x + offset.y * unitNormal.y;
-      const projectedPoint = {
-        x: center.x + unitNormal.x * projectionDistance,
-        y: center.y + unitNormal.y * projectionDistance
-      };
-      const vcS = worldToScreen(vc.x, vc.y);
-      const projectedS = worldToScreen(projectedPoint.x, projectedPoint.y);
-
-      ctx.save();
-      ctx.strokeStyle = "rgba(251,113,133,0.9)";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([7, 5]);
-      ctx.beginPath();
-      ctx.moveTo(vcS.x, vcS.y);
-      ctx.lineTo(projectedS.x, projectedS.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(251,113,133,0.95)";
-      ctx.beginPath();
-      ctx.arc(projectedS.x, projectedS.y, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText("Complex VCor -> normal", projectedS.x + 8, projectedS.y - 8);
-      ctx.restore();
+      // The red bisector-to-VCor diagnostic line was removed.
+      // Keep this hook in place so the draw order stays stable.
     }
 
     function drawVehicleCopies() {
