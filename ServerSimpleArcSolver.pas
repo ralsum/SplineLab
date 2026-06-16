@@ -167,9 +167,19 @@ function GetVehiclePerpendicularIntersection(
   out Point: TServerPoint2D
 ): Boolean;
 var
+  RpNormalOrigin, RpNormalDirection: TServerPoint2D;
+  SvNormalOrigin, SvNormalDirection: TServerPoint2D;
   Det, Dx, Dy, T: Double;
 begin
-  Det := BodyDirection.X * SteerDirection.Y - BodyDirection.Y * SteerDirection.X;
+  // VCor is the intersection of the normals to Rp and Sv, matching the browser render.
+  RpNormalOrigin := Rear;
+  RpNormalDirection.X := -BodyDirection.Y;
+  RpNormalDirection.Y := BodyDirection.X;
+  SvNormalOrigin := Front;
+  SvNormalDirection.X := -SteerDirection.Y;
+  SvNormalDirection.Y := SteerDirection.X;
+
+  Det := RpNormalDirection.X * SvNormalDirection.Y - RpNormalDirection.Y * SvNormalDirection.X;
   if Abs(Det) < 1e-9 then
   begin
     Point.X := 0;
@@ -177,11 +187,11 @@ begin
     Exit(False);
   end;
 
-  Dx := Front.X - Rear.X;
-  Dy := Front.Y - Rear.Y;
-  T := (Dx * SteerDirection.Y - Dy * SteerDirection.X) / Det;
-  Point.X := Rear.X + BodyDirection.X * T;
-  Point.Y := Rear.Y + BodyDirection.Y * T;
+  Dx := SvNormalOrigin.X - RpNormalOrigin.X;
+  Dy := SvNormalOrigin.Y - RpNormalOrigin.Y;
+  T := (Dx * SvNormalDirection.Y - Dy * SvNormalDirection.X) / Det;
+  Point.X := RpNormalOrigin.X + RpNormalDirection.X * T;
+  Point.Y := RpNormalOrigin.Y + RpNormalDirection.Y * T;
   Result := True;
 end;
 
@@ -289,7 +299,6 @@ var
   Vc: TServerPoint2D;
   BodyDirection, Front: TServerPoint2D;
   SteerDirection: TServerPoint2D;
-  NormalDirection: TServerPoint2D;
   SignedPositionError: Double;
   TerminalHeading, HeadingNormalAngle, BisectorHeading: Double;
 begin
@@ -302,9 +311,7 @@ begin
   Vc := GetSimpleArcVC(TerminalPose);
   Result.Vc := Vc;
 
-  NormalDirection.X := -Bisector.BisectorDir.Y;
-  NormalDirection.Y := Bisector.BisectorDir.X;
-  SignedPositionError := SignedDistanceToLine(Vc, Bisector.BisectorOrigin, NormalDirection);
+  SignedPositionError := SignedDistanceToLine(Vc, Bisector.BisectorOrigin, Bisector.BisectorDir);
   Result.PositionError := Abs(SignedPositionError);
   TerminalHeading := TerminalPose.Angle;
   Result.HeadingError := AngleDistanceToPerpendicular(TerminalHeading, Bisector.BisectorAngle);
