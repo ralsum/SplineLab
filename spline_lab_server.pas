@@ -11,6 +11,8 @@ uses
   PoseSolver,
   ServerSimpleArcSolver;
 
+function libc_isatty(fd: LongInt): LongInt; cdecl; external 'c' name 'isatty';
+
 type
   TStaticServer = class
   private
@@ -21,6 +23,7 @@ type
     function GuessMimeType(const FileName: string): string;
     procedure SendTextResponse(var Response: TFPHTTPConnectionResponse; const Code: Integer; const CodeText, Body: string);
     procedure SendJsonResponse(var Response: TFPHTTPConnectionResponse; const Code: Integer; const Body: string);
+    function ReadLaunchStatus: string;
     procedure RequestHandler(Sender: TObject; var Request: TFPHTTPConnectionRequest; var Response: TFPHTTPConnectionResponse);
   public
     constructor Create(const ABaseDir: string);
@@ -184,6 +187,11 @@ begin
   Result := Result + ']';
 end;
 
+function EscapeJsonString(const Value: string): string;
+begin
+  Result := JsonString(Value);
+end;
+
 constructor TStaticServer.Create(const ABaseDir: string);
 begin
   inherited Create;
@@ -304,6 +312,29 @@ begin
   Response.FreeContentStream := True;
 end;
 
+function TStaticServer.ReadLaunchStatus: string;
+var
+  StatusPath: string;
+  Lines: TStringList;
+begin
+  StatusPath := '/tmp/openclaw-control-status.txt';
+  Lines := TStringList.Create;
+  try
+    if FileExists(StatusPath) then
+    begin
+      Lines.LoadFromFile(StatusPath);
+      Result := Trim(Lines.Text);
+    end
+    else
+      Result := 'OpenClaw control launching...';
+  finally
+    Lines.Free;
+  end;
+
+  if Result = '' then
+    Result := 'OpenClaw control launching...';
+end;
+
 procedure TStaticServer.RequestHandler(Sender: TObject; var Request: TFPHTTPConnectionRequest; var Response: TFPHTTPConnectionResponse);
 var
   FilePath, EffectivePath: string;
@@ -395,6 +426,19 @@ begin
     Exit;
   end;
 
+  if SameText(Copy(StripQuery(Request.URI), 1, Length('/api/openclaw-status')), '/api/openclaw-status') then
+  begin
+    SendJsonResponse(
+      Response,
+      200,
+      '{' +
+        '"ok":true,' +
+        '"message":' + EscapeJsonString(ReadLaunchStatus) +
+      '}'
+    );
+    Exit;
+  end;
+
   FilePath := ResolveRequestPath(Request.URI);
   if FilePath = '' then
   begin
@@ -438,14 +482,20 @@ procedure TStaticServer.Run(const Port: Word);
 var
   Server: TFPHTTPServer;
 begin
-    Server := TFPHTTPServer.Create(nil);
-    try
-      Server.Port := Port;
+  Server := TFPHTTPServer.Create(nil);
+  try
+    Server.Port := Port;
     Server.Threaded := False;
     Server.OnRequest := RequestHandler;
     Server.Active := True;
     Writeln('Serving ', FBaseDir, ' on http://0.0.0.0:', Port);
-    ReadLn;
+
+    // Stay alive even when launched without an attached terminal.
+    if libc_isatty(0) = 1 then
+      ReadLn
+    else
+      while True do
+        Sleep(1000);
   finally
     Server.Free;
   end;

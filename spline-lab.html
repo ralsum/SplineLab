@@ -49,6 +49,18 @@
       align-items: start;
       padding: 18px 20px 14px;
     }
+    .titlestack {
+      display: grid;
+      gap: 10px;
+      max-width: min(760px, 100%);
+    }
+    .title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
     .titleblock h1 {
       margin: 0;
       font-size: clamp(24px, 3vw, 40px);
@@ -68,6 +80,41 @@
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
+    }
+    .launch-banner {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex: 1 1 360px;
+      min-width: min(100%, 360px);
+      padding: 12px 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(125, 211, 252, 0.18);
+      background: linear-gradient(135deg, rgba(125, 211, 252, 0.10), rgba(18, 25, 46, 0.92));
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+    }
+    .launch-copy {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .launch-label {
+      color: var(--accent);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+    }
+    .launch-message {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .launch-meta {
+      color: var(--muted);
+      font-size: 12px;
     }
     .status {
       display: flex;
@@ -96,20 +143,15 @@
       right: 20px;
       bottom: 20px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-columns: minmax(0, 1fr);
       gap: 14px;
       align-items: start;
       z-index: 6;
       pointer-events: none;
     }
-    .pass-panel,
-    .info-panel {
+    .pass-panel {
       padding: 16px 20px;
       pointer-events: auto;
-    }
-    .info-panel {
-      padding: 16px;
-      max-width: 320px;
     }
     .stage-shell, .side {
       min-height: 0;
@@ -129,7 +171,7 @@
       position: absolute;
       top: 16px;
       right: 16px;
-      width: min(420px, calc(100vw - 56px));
+      width: min(560px, calc(100vw - 56px));
       max-height: calc(100% - 32px);
       z-index: 5;
       display: grid;
@@ -270,6 +312,7 @@
     .json {
       width: 100%;
       min-height: 130px;
+      max-height: 42vh;
       resize: vertical;
       border-radius: 14px;
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -279,6 +322,12 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
       line-height: 1.5;
+    }
+    .json-output {
+      min-height: 420px;
+      width: 100%;
+      resize: vertical;
+      max-height: 60vh;
     }
     .debug-data {
       margin: 0;
@@ -316,9 +365,20 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="titleblock">
-        <h1>Spline-Lab</h1>
-        <div class="eyebrow">Server: Pascal</div>
+      <div class="titlestack">
+        <div class="title-row">
+          <div class="titleblock">
+            <h1>Spline-Lab</h1>
+            <div class="eyebrow">Server: Pascal</div>
+          </div>
+          <div class="launch-banner" role="status" aria-live="polite">
+            <div class="launch-copy">
+              <div class="launch-label">OpenClaw</div>
+              <div id="openclawLaunchMessage" class="launch-message">OpenClaw control launching...</div>
+            </div>
+            <div id="openclawLaunchMeta" class="launch-meta">Waiting for launcher status</div>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -352,6 +412,11 @@
           </div>
         </section>
 
+        <section class="panel">
+          <div class="panel-title">Live JSON</div>
+          <textarea id="jsonOutput" class="json json-output" readonly spellcheck="false"></textarea>
+        </section>
+
       </aside>
     </main>
 
@@ -359,11 +424,6 @@
       <section class="panel pass-panel">
         <div class="panel-title">Pass Estimates</div>
         <pre id="debugData" class="debug-data">No solver trace yet.</pre>
-      </section>
-
-      <section class="panel info-panel">
-        <div class="panel-title">Information</div>
-        <div id="dependentList" class="controls"></div>
       </section>
     </div>
   </div>
@@ -375,12 +435,24 @@
     const arcRadiusInput = document.getElementById("arcRadius");
     const arcAngleInput = document.getElementById("arcAngle");
     const arcSteerMaxInput = document.getElementById("arcSteerMax");
-    const dependentList = document.getElementById("dependentList");
     const debugData = document.getElementById("debugData");
     const jsonOutput = document.getElementById("jsonOutput");
     const coordsReadout = document.getElementById("coordsReadout");
     const renderStatus = document.getElementById("renderStatus");
+    const openclawLaunchMessage = document.getElementById("openclawLaunchMessage");
+    const openclawLaunchMeta = document.getElementById("openclawLaunchMeta");
     const poseSampleCache = new Map();
+    const VEHICLE_BODY_LABEL = "Rp";
+    const VEHICLE_STEER_LABEL = "Sp";
+    const COMPLEX_CURVE_LABEL = "complexCurve";
+    const VC_LABEL = "vc";
+    const TERMINAL_POSE_LABEL = "terminalPose";
+    const COMPLEX_TERMINAL_POSE_LABEL = "complexTerminalPose";
+    const STEERED_WHEEL_TRAVEL_DISTANCE_LABEL = "steeredWheelTravelDistance";
+    const TERMINAL_RADIUS_LABEL = "terminalRadius";
+    const POSITION_ERROR_LABEL = "positionError";
+    const HEADING_ERROR_LABEL = "headingError";
+    const EDGE_CASE_LABEL = "edgeCase";
 
     const COLORS = ["#7dd3fc", "#7ef0bf", "#fbbf24", "#fb7185", "#c084fc", "#f97316"];
     const randomId = () => {
@@ -402,9 +474,9 @@
     let needsRender = true;
     let animationFrame = 0;
     let drag = null;
-    let dependentListDirty = true;
     let initialized = false;
     let initialVehicleSequenceFitPending = true;
+    let openclawStatusPoll = 0;
 
     function createCoord(X = 0, Y = 0, Psi = 0, length = 1, label = "Coord", color = "#7dd3fc") {
       const coord = {
@@ -434,8 +506,8 @@
 
     function createVehicle(overrides = {}) {
       const vehicle = {
-        Rp: overrides.Rp ? normalizeCoord(overrides.Rp, { label: "Rp", length: 1, color: "#7dd3fc" }) : createCoord(0, 0, 0, 1, "Rp", "#7dd3fc"),
-        Sp: overrides.Sp ? normalizeCoord(overrides.Sp, { label: "Sp", length: 0.25, color: "#fbbf24" }) : createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24"),
+        Rp: overrides.Rp ? normalizeCoord(overrides.Rp, { label: VEHICLE_BODY_LABEL, length: 1, color: "#7dd3fc" }) : createCoord(0, 0, 0, 1, VEHICLE_BODY_LABEL, "#7dd3fc"),
+        Sp: overrides.Sp ? normalizeCoord(overrides.Sp, { label: VEHICLE_STEER_LABEL, length: 0.25, color: "#fbbf24" }) : createCoord(0, 0, 0, 0.25, VEHICLE_STEER_LABEL, "#fbbf24"),
         sl: Number.isFinite(Number(overrides.sl)) ? Number(overrides.sl) : Math.PI / 4
       };
       Object.defineProperty(vehicle, "headingChange", {
@@ -445,7 +517,7 @@
         },
         set(value) {
           if (!vehicle.Sp) {
-            vehicle.Sp = createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24");
+            vehicle.Sp = createCoord(0, 0, 0, 0.25, VEHICLE_STEER_LABEL, "#fbbf24");
           }
           vehicle.Sp.Psi = Number(value) || 0;
         }
@@ -461,8 +533,8 @@
 
     function createAnchorVehicle(sl = Math.PI / 4) {
       return createVehicle({
-        Rp: createCoord(0, 0, 0, 1, "Rp", "#7dd3fc"),
-        Sp: createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24"),
+        Rp: createCoord(0, 0, 0, 1, VEHICLE_BODY_LABEL, "#7dd3fc"),
+        Sp: createCoord(0, 0, 0, 0.25, VEHICLE_STEER_LABEL, "#fbbf24"),
         sl
       });
     }
@@ -569,8 +641,8 @@
       const raw = vehicle || {};
       const rpSource = raw.Rp || raw.rp || raw.rear || raw;
       const spSource = raw.Sp || raw.sp || {};
-      const rp = normalizeCoord(rpSource, { label: "Rp", length: 1, color: "#7dd3fc" });
-      const sp = normalizeCoord(spSource, { label: "Sp", length: 0.25, color: "#fbbf24" });
+      const rp = normalizeCoord(rpSource, { label: VEHICLE_BODY_LABEL, length: 1, color: "#7dd3fc" });
+      const sp = normalizeCoord(spSource, { label: VEHICLE_STEER_LABEL, length: 0.25, color: "#fbbf24" });
       if (!Number.isFinite(Number(spSource?.Psi)) && Number.isFinite(Number(raw.headingChange))) {
         sp.Psi = Number(raw.headingChange) || 0;
       }
@@ -593,18 +665,48 @@
       };
     }
 
+    function applyOpenClawStatus(message) {
+      const text = (message || "").trim() || "OpenClaw control launching...";
+      if (openclawLaunchMessage) {
+        openclawLaunchMessage.textContent = text;
+      }
+      if (openclawLaunchMeta) {
+        const lower = text.toLowerCase();
+        if (lower.includes("ready")) {
+          openclawLaunchMeta.textContent = "CDP + Playwright attach path ready";
+        } else if (lower.includes("timed out") || lower.includes("error")) {
+          openclawLaunchMeta.textContent = "Launcher reported a startup problem";
+        } else {
+          openclawLaunchMeta.textContent = "Waiting for Chrome and MCP";
+        }
+      }
+    }
+
+    async function refreshOpenClawStatus() {
+      try {
+        const response = await fetch("/api/openclaw-status", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        applyOpenClawStatus(payload?.message);
+      } catch {
+        applyOpenClawStatus("OpenClaw control launching...");
+      }
+    }
+
     function normalizeVectors(vectors) {
       const cleaned = [];
       for (const vector of vectors) {
         const normalized = normalizeVector(vector);
-        if (normalized.label === "Veh" || normalized.label === "Vehicle vector" || normalized.label === "Heading" || normalized.label === "Sv" || normalized.label === "Steer vector") continue;
+        if (normalized.label === "Veh" || normalized.label === "Vehicle vector" || normalized.label === "Heading" || normalized.label === "Sv" || normalized.label === "Sp" || normalized.label === "Steer vector") continue;
         cleaned.push(normalized);
       }
       return cleaned;
     }
 
     function isSteerVector(vector) {
-      return vector?.label === "Sv" || vector?.label === "Steer vector";
+      return vector?.label === "Sv" || vector?.label === "Sp" || vector?.label === "Steer vector";
     }
 
     function isThetaVector(vector) {
@@ -621,8 +723,8 @@
           theta: Number(copy?.theta) || 0,
           radius: Number(copy?.radius) || 0,
           curveLength: Number(copy?.curveLength) || 0,
-          label: copy?.label || "Veh",
-          steerLabel: copy?.steerLabel || "Sv"
+          label: copy?.label || "vehicleCopies[0]",
+          steerLabel: copy?.steerLabel || VEHICLE_STEER_LABEL
         }))
         .filter(copy => Number.isFinite(copy.x) && Number.isFinite(copy.y) && Number.isFinite(copy.angle));
     }
@@ -829,8 +931,8 @@
           theta: i === 0 ? 0 : pose.theta,
           radius: pose.radius,
           curveLength: pose.curveLength,
-          label: "Veh",
-          steerLabel: "Sv",
+          label: "vehicleCopies",
+          steerLabel: VEHICLE_STEER_LABEL,
           pathDistance: curveLength * t
         });
       }
@@ -852,39 +954,6 @@
       ].join("|");
       if (poseSampleCache.has(cacheKey)) {
         return { ...poseSampleCache.get(cacheKey) };
-      }
-
-      try {
-        const params = new URLSearchParams({
-          baseX: String(baseX),
-          baseY: String(baseY),
-          baseAngle: String(baseAngle),
-          distance: String(Number(distance) || 0),
-          slew: String(Number(slew) || 0),
-          curveLength: String(Number(curveLength) || 0),
-          radius: String(Number(radius) || 0)
-        });
-        const xhr = new XMLHttpRequest();
-        xhr.open("GET", `/api/sample-pose?${params.toString()}`, false);
-        xhr.send(null);
-        if (xhr.status >= 200 && xhr.status < 300 && xhr.responseText) {
-          const parsed = JSON.parse(xhr.responseText);
-          const pose = parsed?.pose || null;
-          if (pose) {
-            const result = {
-              x: Number(pose.x) || 0,
-              y: Number(pose.y) || 0,
-              angle: Number(pose.angle) || 0,
-              theta: Number(pose.theta) || 0,
-              radius: Number(pose.radius) || 0,
-              curveLength: Number(pose.curveLength) || 0
-            };
-            poseSampleCache.set(cacheKey, result);
-            return { ...result };
-          }
-        }
-      } catch (error) {
-        // Fall back to the local integrator if the server API is unavailable.
       }
 
       const localPose = Math.abs(slew) < 0.001
@@ -1644,13 +1713,13 @@
       const activeVehicle = getActiveVehicle();
       const rp = activeVehicle?.Rp || null;
       if (!rp) {
-        return createCoord(0, 0, 0, 1, "Rp", "#7dd3fc");
+        return createCoord(0, 0, 0, 1, VEHICLE_BODY_LABEL, "#7dd3fc");
       }
       const x = Number(rp.X) || 0;
       const y = Number(rp.Y) || 0;
       const psi = Number(rp.Psi) || 0;
       if (x === 0 && y === 0 && psi === 0) {
-        return createCoord(0, 0, 0, 1, "Rp", "#7dd3fc");
+        return createCoord(0, 0, 0, 1, VEHICLE_BODY_LABEL, "#7dd3fc");
       }
       return rp;
     }
@@ -1686,7 +1755,7 @@
         (Number(rp.Y) || 0) + Math.sin(rpHeading) * rpLength,
         rpHeading + (Number(sp.Psi) || 0),
         Number.isFinite(Number(sp.length)) ? Number(sp.length) : 0.25,
-        "Sv",
+        VEHICLE_STEER_LABEL,
         "#fbbf24"
       );
     }
@@ -1826,7 +1895,6 @@
         complexCount
       );
       state.simpleVehicleCopies = [];
-      dependentListDirty = true;
     }
 
     function enforceAnchors() {
@@ -1836,22 +1904,22 @@
         state.Vehicles[0] = activeVehicle;
       }
       if (!activeVehicle.Rp) {
-        activeVehicle.Rp = createCoord(0, 0, 0, 1, "Rp", "#7dd3fc");
+        activeVehicle.Rp = createCoord(0, 0, 0, 1, VEHICLE_BODY_LABEL, "#7dd3fc");
       }
       activeVehicle.Rp.X = 0;
       activeVehicle.Rp.Y = 0;
       activeVehicle.Rp.Psi = 0;
       activeVehicle.Rp.length = 1;
-      activeVehicle.Rp.label = "Rp";
+      activeVehicle.Rp.label = VEHICLE_BODY_LABEL;
       activeVehicle.Rp.color = "#7dd3fc";
       if (!activeVehicle.Sp) {
-        activeVehicle.Sp = createCoord(0, 0, 0, 0.25, "Sp", "#fbbf24");
+        activeVehicle.Sp = createCoord(0, 0, 0, 0.25, VEHICLE_STEER_LABEL, "#fbbf24");
       }
       activeVehicle.Sp.X = 0;
       activeVehicle.Sp.Y = 0;
       activeVehicle.Sp.Psi = 0;
       activeVehicle.Sp.length = 0.25;
-      activeVehicle.Sp.label = "Sp";
+      activeVehicle.Sp.label = VEHICLE_STEER_LABEL;
       activeVehicle.Sp.color = "#fbbf24";
       return activeVehicle;
     }
@@ -1882,6 +1950,52 @@
         simpleVehicleCopies: [],
         selectedId: state.selectedId,
         vectors: state.vectors
+      };
+    }
+
+    function buildLiveDebugSnapshot(solution = state.simpleArcSolution || solveSimpleArc()) {
+      const arc = getSimpleArcGeometry();
+      const bisector = solution?.bisector || getSimpleArcBisectorGeometry(arc);
+      const terminalPose = solution?.terminalPose || solution?.complexTerminalPose || null;
+      const vc = solution?.vc || solution?.complexVc || null;
+      return {
+        timestamp: new Date().toISOString(),
+        inputs: {
+          arc: {
+            radius: Number(state.arc?.radius) || 0,
+            deltaPsi: Number(state.arc?.deltaPsi) || 0,
+            angle: Number(state.arc?.angle) || 0,
+            length: Number(state.arc?.length) || 0,
+            steerMax: Number(state.arc?.steerMax) || 0
+          },
+          vehicle: state.vehicle ? {
+            Rp: normalizeCoord(state.vehicle.Rp || {}, { label: VEHICLE_BODY_LABEL, length: 1, color: "#7dd3fc" }),
+            Sp: normalizeCoord(state.vehicle.Sp || {}, { label: VEHICLE_STEER_LABEL, length: 0.25, color: "#fbbf24" }),
+            sl: Number(state.vehicle.sl) || 0
+          } : null
+        },
+        solver: {
+          success: Boolean(solution?.success),
+          edgeCase: Boolean(solution?.edgeCase),
+          edgeCaseReason: solution?.edgeCaseReason || null,
+          positionError: Number.isFinite(Number(solution?.positionError)) ? Number(solution.positionError) : null,
+          headingError: Number.isFinite(Number(solution?.headingError)) ? Number(solution.headingError) : null,
+          headingNormalError: Number.isFinite(Number(solution?.headingNormalError)) ? Number(solution.headingNormalError) : null,
+          terminalRadius: Number.isFinite(Number(solution?.terminalRadius)) ? Number(solution.terminalRadius) : null,
+          vc,
+          terminalPose,
+          bisector,
+          passCount: Array.isArray(solution?.passes) ? solution.passes.length : 0
+        },
+        display: {
+          coordsReadout: lastPointerWorld
+            ? { x: lastPointerWorld.x, y: lastPointerWorld.y }
+            : { x: 0, y: 0 },
+          renderStatus: renderStatus?.textContent || "",
+          debugSummary: formatComplexTerminalSummary(solution),
+          vcSummary: formatVcSummary(solution),
+          errorSummary: formatErrorSummary(solution)
+        }
       };
     }
 
@@ -2132,6 +2246,21 @@
       return radius * getSimpleArcDeltaPsi(arc);
     }
 
+    function getSimpleArcVC(terminalPose) {
+      if (!terminalPose) return null;
+      const rear = {
+        x: Number(terminalPose.x) || 0,
+        y: Number(terminalPose.y) || 0
+      };
+      const bodyAngle = Number(terminalPose.angle) || 0;
+      const front = {
+        x: rear.x + Math.cos(bodyAngle),
+        y: rear.y + Math.sin(bodyAngle)
+      };
+      const steerAngle = bodyAngle + (Number(terminalPose.theta) || 0);
+      return getVehiclePerpendicularIntersection(rear, bodyAngle, front, steerAngle);
+    }
+
     function normalizeSteerMax(rad) {
       return degToRad(normalizeSteerMaxDegrees(radToDeg(Number(rad) || 0)));
     }
@@ -2322,10 +2451,10 @@
           totalTravelDistance: Number(parsed.totalTravelDistance) || (Number(parsed.curveLength) || 0),
           spTravelDistance: Number(parsed.spTravelDistance) || (Number(parsed.curveLength) || 0),
           terminalCoord: parsed.terminalCoord || (finalPose
-            ? createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, "Rp", "#7dd3fc")
+            ? createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, VEHICLE_BODY_LABEL, "#7dd3fc")
             : null)
         };
-      } catch (error) {
+      } catch {
         return null;
       }
     }
@@ -2728,9 +2857,9 @@
       const endS = worldToScreen(arcPoints[arcPoints.length - 1].x, arcPoints[arcPoints.length - 1].y);
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText("Complex curve", centerS.x + 8, centerS.y - 24);
-      ctx.fillText("CCor", centerS.x + 8, centerS.y - 8);
-      ctx.fillText(`Radius = ${Math.abs(arc.radius).toFixed(2)}, Al = ${(arc.arcLength).toFixed(2)}`, endS.x + 10, endS.y - 8);
+      ctx.fillText(COMPLEX_CURVE_LABEL, centerS.x + 8, centerS.y - 24);
+      ctx.fillText(VC_LABEL, centerS.x + 8, centerS.y - 8);
+      ctx.fillText(`${TERMINAL_RADIUS_LABEL} = ${Math.abs(arc.radius).toFixed(2)}, arcLength = ${(arc.arcLength).toFixed(2)}`, endS.x + 10, endS.y - 8);
       ctx.restore();
     }
 
@@ -2738,8 +2867,8 @@
       const alpha = options.alpha ?? 1;
       const bodyWidth = options.bodyWidth ?? 3;
       const steerWidth = options.steerWidth ?? 2.5;
-      const bodyLabel = options.label ?? "Veh";
-      const steerLabel = options.steerLabel ?? "Sv";
+      const bodyLabel = options.label ?? VEHICLE_BODY_LABEL;
+      const steerLabel = options.steerLabel ?? VEHICLE_STEER_LABEL;
       const bodyAngle = Number(instance.angle) || 0;
       const theta = Number(instance.theta) || 0;
       const rear = { x: Number(instance.x) || 0, y: Number(instance.y) || 0 };
@@ -2807,15 +2936,15 @@
         alpha: 1,
         bodyWidth: 4,
         steerWidth: 2.5,
-        label: "Rp",
-        steerLabel: solution?.edgeCase ? "Sv (limit)" : "Sv"
+        label: VEHICLE_BODY_LABEL,
+        steerLabel: solution?.edgeCase ? `${VEHICLE_STEER_LABEL} (limit)` : VEHICLE_STEER_LABEL
       });
       const rearS = worldToScreen(Number(pose.x) || 0, Number(pose.y) || 0);
       ctx.save();
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText(
-        `${solution?.edgeCase ? "Edge case pose" : "Terminal pose"}  ψ = ${formatAngle(Number(pose.heading) || Number(pose.angle) || 0)}`,
+        `${solution?.edgeCase ? EDGE_CASE_LABEL : TERMINAL_POSE_LABEL}  ψ = ${formatAngle(Number(pose.heading) || Number(pose.angle) || 0)}`,
         rearS.x + 12,
         rearS.y - 32
       );
@@ -2829,15 +2958,15 @@
         alpha: 1,
         bodyWidth: 4,
         steerWidth: 2.5,
-        label: "Rp",
-        steerLabel: "Sv"
+        label: VEHICLE_BODY_LABEL,
+        steerLabel: VEHICLE_STEER_LABEL
       });
       const rearS = worldToScreen(Number(pose.x) || 0, Number(pose.y) || 0);
       ctx.save();
       ctx.fillStyle = "rgba(237,243,255,0.88)";
       ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText(
-        `Complex terminal pose  ψ = ${formatAngle(Number(pose.heading) || Number(pose.angle) || 0)}`,
+        `${COMPLEX_TERMINAL_POSE_LABEL}  ψ = ${formatAngle(Number(pose.heading) || Number(pose.angle) || 0)}`,
         rearS.x + 12,
         rearS.y - 32
       );
@@ -2848,7 +2977,7 @@
       const vc = state.simpleArcSolution?.vc || state.simpleArcSolution?.complexVc || null;
       if (!vc) return;
       const vcS = worldToScreen(Number(vc.x) || 0, Number(vc.y) || 0);
-      const vcLabel = `VCor (${formatFixed3(Number(vc.x) || 0)}, ${formatFixed3(Number(vc.y) || 0)})`;
+      const vcLabel = `${VC_LABEL} (${formatFixed3(Number(vc.x) || 0)}, ${formatFixed3(Number(vc.y) || 0)})`;
       ctx.save();
       ctx.fillStyle = "rgba(251,191,36,0.95)";
       ctx.beginPath();
@@ -2861,7 +2990,7 @@
     }
 
     function drawVehicleCorToBisectorNormal() {
-      // The red bisector-to-VCor diagnostic line was removed.
+      // The red bisector-to-vc diagnostic line was removed.
       // Keep this hook in place so the draw order stays stable.
     }
 
@@ -2875,7 +3004,7 @@
 
       const combined = complexCopies.map((copy, index) => ({
         copy,
-        label: index === 0 ? "Start" : "",
+        label: index === 0 ? "vehicleCopies[0]" : "",
         bodyWidth: 2.5,
         steerWidth: 1.9
       }));
@@ -3059,7 +3188,7 @@
 
     function updateJson() {
       if (jsonOutput) {
-        jsonOutput.value = JSON.stringify(serializableState(), null, 2);
+        jsonOutput.value = JSON.stringify(buildLiveDebugSnapshot(), null, 2);
       }
     }
 
@@ -3125,50 +3254,7 @@
     }
 
     function updateDependentList() {
-      if (!dependentListDirty) return;
-      dependentList.innerHTML = "";
-      const solution = state.simpleArcSolution || solveSimpleArc();
-      const entries = [{
-        label: "Complex terminal",
-        value: formatComplexTerminalSummary(solution),
-        full: true
-      }, {
-        label: "CCor",
-        value: formatVcSummary(solution),
-        full: true
-      }, {
-        label: "Travel",
-        value: formatFixed3(Number(solution?.steeredWheelTravelDistance)
-          || Number(solution?.curveLength)
-          || 0),
-        full: true
-      }, {
-        label: "Radius",
-        value: formatFixed3(Number(solution?.terminalRadius)
-          || Number(solution?.radius)
-          || 0),
-        full: true
-      }, {
-        label: "Errors",
-        value: formatErrorSummary(solution),
-        full: true
-      }, ...(solution?.edgeCase ? [{
-        label: "Status",
-        value: "Edge case: steer max reached before CCor could hit the bisector.",
-        full: true
-      }] : [])];
-      for (const entry of entries) {
-        const control = document.createElement("div");
-        control.className = entry.full ? "control full" : "control";
-        control.innerHTML = `
-          <label>${escapeHtml(entry.label)}</label>
-          <input type="text" value="${escapeHtml(entry.value)}" readonly />
-          ${entry.note ? `<div class="sub" style="margin: 0; font-size: 12px;">${escapeHtml(entry.note)}</div>` : ""}
-        `;
-        dependentList.appendChild(control);
-      }
       updateDebugData(state.simpleArcTrace || solveSimpleArc());
-      dependentListDirty = false;
     }
 
     function escapeHtml(value) {
@@ -3389,25 +3475,25 @@
         ? Number(solution.terminalRadius)
         : Number(pose.radius);
       const radiusText = Number.isFinite(radius)
-        ? ` r ${formatFixed3(radius)}`
+        ? ` ${TERMINAL_RADIUS_LABEL} ${formatFixed3(radius)}`
         : "";
-      return `${poseText}${theta}${radiusText}`;
+      return `${COMPLEX_TERMINAL_POSE_LABEL} ${poseText}${theta}${radiusText}`;
     }
 
     function formatVcSummary(solution) {
       const vc = solution?.complexVc || solution?.vc || null;
       if (!vc) return "NaN";
       const radius = Number.isFinite(Number(solution?.terminalRadius))
-        ? ` r ${formatFixed3(Number(solution.terminalRadius))}`
+        ? ` ${TERMINAL_RADIUS_LABEL} ${formatFixed3(Number(solution.terminalRadius))}`
         : "";
-      return `${formatPointSummary(vc)}${radius}`;
+      return `${VC_LABEL} ${formatPointSummary(vc)}${radius}`;
     }
 
     function formatErrorSummary(solution) {
       if (!solution) return "NaN";
       const position = formatFixed3(solution.positionError);
       const heading = formatFixed3(solution.headingError);
-      return `Position ${position}, Heading ${heading}`;
+      return `${POSITION_ERROR_LABEL} ${position}, ${HEADING_ERROR_LABEL} ${heading}`;
     }
 
     function vectorAtPoint(point, baseAngle, length, label, color) {
@@ -3510,7 +3596,6 @@
               vector.y = world.y - drag.grabOffset.y;
             }
           }
-          dependentListDirty = true;
         }
         saveState();
         scheduleRender();
@@ -3528,7 +3613,6 @@
 
       const hit = findHit(p);
       if (hit) {
-        dependentListDirty = true;
         state.selectedId = hit.vector.id;
         drag = {
           type: "vector",
@@ -3554,7 +3638,6 @@
         startOffsetY: state.view.offsetY
       };
       state.selectedId = null;
-      dependentListDirty = true;
       saveState();
       scheduleRender();
     });
@@ -3591,7 +3674,6 @@
       const vector = vectorAtPoint(world, 0, 1.2, `Vector ${state.vectors.length + 1}`, COLORS[state.vectors.length % COLORS.length]);
       state.vectors.push(vector);
       state.selectedId = vector.id;
-      dependentListDirty = true;
       saveState();
       scheduleRender();
     });
@@ -3710,7 +3792,7 @@
         complexTerminalPose,
         complexVc,
         terminalRadius,
-        terminalCoord: finalPose ? createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, "Rp", "#7dd3fc") : null,
+        terminalCoord: finalPose ? createCoord(finalPose.x, finalPose.y, finalPose.angle, 1, VEHICLE_BODY_LABEL, "#7dd3fc") : null,
         complexCurve: {
           valid: Boolean(arc?.valid),
           center: { ...arc.center },
@@ -3744,7 +3826,6 @@
           activeVehicle.sl = Number(result.sl);
         }
       }
-      dependentListDirty = true;
       syncInputs();
       if (persist) saveState();
       if (render) scheduleRender();
@@ -3822,7 +3903,6 @@
         const selected = state.vectors.find(v => v.id === state.selectedId) || null;
         state.vectors = state.vectors.filter(v => v.id !== state.selectedId);
         state.selectedId = null;
-        dependentListDirty = true;
         saveState();
         scheduleRender();
       }
@@ -3966,6 +4046,11 @@
     function initialize() {
       if (initialized) return;
       renderStatus.textContent = "Render: booting";
+      applyOpenClawStatus("OpenClaw control launching...");
+      refreshOpenClawStatus();
+      if (!openclawStatusPoll) {
+        openclawStatusPoll = window.setInterval(refreshOpenClawStatus, 5000);
+      }
       if (!setupCanvas()) {
         renderStatus.textContent = "Render: waiting for layout";
         requestAnimationFrame(initialize);

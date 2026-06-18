@@ -10,4 +10,8 @@ if [[ ! -x "$SERVER_BIN" || "$SERVER_SRC" -nt "$SERVER_BIN" ]]; then
   fpc -Mdelphi -O3 -B -o"$SERVER_BIN" "$SERVER_SRC"
 fi
 
-exec "$SERVER_BIN" "$PORT"
+if [[ -t 0 && -t 1 ]]; then
+  exec "$SERVER_BIN" "$PORT"
+fi
+
+exec setsid -f "$SERVER_BIN" "$PORT" >>"$BASE_DIR/spline_lab_server.log" 2>&1 < /dev/null
