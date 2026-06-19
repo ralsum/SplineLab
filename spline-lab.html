@@ -52,7 +52,7 @@
     .titlestack {
       display: grid;
       gap: 10px;
-      max-width: min(760px, 100%);
+      width: 100%;
     }
     .title-row {
       display: flex;
@@ -60,6 +60,7 @@
       justify-content: space-between;
       gap: 14px;
       flex-wrap: wrap;
+      width: 100%;
     }
     .titleblock h1 {
       margin: 0;
@@ -87,8 +88,8 @@
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      flex: 1 1 360px;
-      min-width: min(100%, 360px);
+      flex: 0 0 320px;
+      min-width: 280px;
       padding: 12px 14px;
       border-radius: 18px;
       border: 1px solid rgba(125, 211, 252, 0.18);
@@ -116,6 +117,28 @@
       color: var(--muted);
       font-size: 12px;
     }
+    .launch-and-controls {
+      display: flex;
+      flex: 1 1 760px;
+      min-width: 0;
+      gap: 14px;
+      align-items: stretch;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .control-card {
+      flex: 1 1 340px;
+      min-width: 300px;
+      padding: 12px 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(157, 173, 212, 0.18);
+      background: rgba(13, 18, 34, 0.90);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18);
+      backdrop-filter: blur(12px);
+    }
+    .control-card .controls {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
     .status {
       display: flex;
       flex-wrap: wrap;
@@ -140,7 +163,7 @@
     .bottom-row {
       position: absolute;
       left: 20px;
-      right: 20px;
+      right: calc(16px + min(560px, calc(100vw - 56px)) + 12px);
       bottom: 20px;
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -148,10 +171,13 @@
       align-items: start;
       z-index: 6;
       pointer-events: none;
+      justify-items: start;
     }
     .pass-panel {
       padding: 16px 20px;
       pointer-events: auto;
+      width: 100%;
+      max-width: none;
     }
     .stage-shell, .side {
       min-height: 0;
@@ -166,22 +192,21 @@
       position: relative;
       display: grid;
       grid-template-rows: auto 1fr auto;
+      height: 100%;
+      min-height: 0;
     }
     .side {
       position: absolute;
       top: 16px;
       right: 16px;
+      bottom: 16px;
       width: min(560px, calc(100vw - 56px));
-      max-height: calc(100% - 32px);
       z-index: 5;
-      display: grid;
-      grid-template-rows: auto auto 1fr;
+      display: flex;
+      flex-direction: column;
       border-radius: 20px;
       background: rgba(13, 18, 34, 0.94);
       backdrop-filter: blur(14px);
-    }
-    .stage-shell {
-      min-height: calc(100vh - 70px);
     }
     .toolbar {
       display: flex;
@@ -237,6 +262,45 @@
       color: var(--muted);
       font-size: 13px;
       line-height: 1.5;
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .panel-head .panel-title {
+      margin: 0;
+    }
+    .panel-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .mini-button {
+      appearance: none;
+      border: 1px solid rgba(157, 173, 212, 0.22);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+    }
+    .mini-button:hover {
+      background: rgba(125, 211, 252, 0.12);
+      border-color: rgba(125, 211, 252, 0.35);
+      transform: translateY(-1px);
+    }
+    .mini-button:active {
+      transform: translateY(0);
+    }
+    .mini-button[data-active="true"] {
+      background: rgba(126, 240, 191, 0.14);
+      border-color: rgba(126, 240, 191, 0.35);
     }
     .panel {
       padding: 16px;
@@ -324,10 +388,11 @@
       line-height: 1.5;
     }
     .json-output {
-      min-height: 420px;
       width: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
       resize: vertical;
-      max-height: 60vh;
     }
     .debug-data {
       margin: 0;
@@ -347,6 +412,9 @@
     @media (max-width: 1080px) {
       html, body { overflow: auto; }
       .app { height: auto; min-height: 100vh; }
+      .launch-and-controls {
+        justify-content: stretch;
+      }
       .workspace {
         display: block;
       }
@@ -358,6 +426,12 @@
         width: auto;
         max-height: none;
         margin-top: 14px;
+      }
+      .bottom-row {
+        right: 20px;
+      }
+      .pass-panel {
+        width: auto;
       }
   }
   </style>
@@ -371,12 +445,34 @@
             <h1>Spline-Lab</h1>
             <div class="eyebrow">Server: Pascal</div>
           </div>
-          <div class="launch-banner" role="status" aria-live="polite">
-            <div class="launch-copy">
-              <div class="launch-label">OpenClaw</div>
-              <div id="openclawLaunchMessage" class="launch-message">OpenClaw control launching...</div>
+          <div class="launch-and-controls">
+            <div class="launch-banner" role="status" aria-live="polite">
+              <div class="launch-copy">
+                <div class="launch-label">OpenClaw</div>
+                <div id="openclawLaunchMessage" class="launch-message">Waiting</div>
+              </div>
+              <div id="openclawLaunchMeta" class="launch-meta">Waiting for launcher status</div>
             </div>
-            <div id="openclawLaunchMeta" class="launch-meta">Waiting for launcher status</div>
+            <section class="control-card" aria-label="Arc controls">
+              <div class="controls">
+                <div class="control">
+                  <label for="arcRadius">Radius</label>
+                  <input id="arcRadius" type="number" min="-100" max="100" step="0.001" value="1.000" inputmode="decimal" />
+                </div>
+                <div class="control">
+                  <label for="arcAngle">Angle Size</label>
+                  <input id="arcAngle" type="number" min="0" max="180" step="0.1" value="90.0" inputmode="decimal" />
+                </div>
+                <div class="control">
+                  <label for="arcSteerMax">Steer Max (SM)</label>
+                  <input id="arcSteerMax" type="number" min="45" max="90" step="1" value="90.00" inputmode="decimal" />
+                </div>
+                <div class="control">
+                  <label for="arcSlew">Slew</label>
+                  <input id="arcSlew" type="number" min="0.1" max="1.571" step="0.04" value="0.785" inputmode="decimal" />
+                </div>
+              </div>
+            </section>
           </div>
         </div>
       </div>
@@ -395,25 +491,14 @@
       </section>
 
       <aside class="side">
-        <section class="panel">
-          <div class="controls">
-            <div class="control">
-              <label for="arcRadius">Radius</label>
-              <input id="arcRadius" type="number" min="-100" max="100" step="0.001" value="1.000" inputmode="decimal" />
-            </div>
-            <div class="control">
-              <label for="arcAngle">Angle Size</label>
-              <input id="arcAngle" type="number" min="0" max="180" step="0.1" value="90.0" inputmode="decimal" />
-            </div>
-            <div class="control">
-              <label for="arcSteerMax">Steer Max (SM)</label>
-              <input id="arcSteerMax" type="number" min="45" max="90" step="1" value="90.00" inputmode="decimal" />
+        <section class="panel" style="display:flex; flex-direction:column; min-height:0; flex:1 1 auto;">
+          <div class="panel-head">
+            <div class="panel-title">Live JSON</div>
+            <div class="panel-actions">
+              <button id="copyJsonButton" type="button" class="mini-button">Copy</button>
+              <button id="toggleJsonCompactButton" type="button" class="mini-button" data-active="false">Compact</button>
             </div>
           </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-title">Live JSON</div>
           <textarea id="jsonOutput" class="json json-output" readonly spellcheck="false"></textarea>
         </section>
 
@@ -422,7 +507,12 @@
 
     <div class="bottom-row">
       <section class="panel pass-panel">
-        <div class="panel-title">Pass Estimates</div>
+        <div class="panel-head">
+          <div class="panel-title">Pass Estimates</div>
+          <div class="panel-actions">
+            <button id="nextPassButton" type="button" class="mini-button">Next Pass</button>
+          </div>
+        </div>
         <pre id="debugData" class="debug-data">No solver trace yet.</pre>
       </section>
     </div>
@@ -435,13 +525,21 @@
     const arcRadiusInput = document.getElementById("arcRadius");
     const arcAngleInput = document.getElementById("arcAngle");
     const arcSteerMaxInput = document.getElementById("arcSteerMax");
+    const arcSlewInput = document.getElementById("arcSlew");
     const debugData = document.getElementById("debugData");
+    const nextPassButton = document.getElementById("nextPassButton");
     const jsonOutput = document.getElementById("jsonOutput");
+    const copyJsonButton = document.getElementById("copyJsonButton");
+    const toggleJsonCompactButton = document.getElementById("toggleJsonCompactButton");
     const coordsReadout = document.getElementById("coordsReadout");
     const renderStatus = document.getElementById("renderStatus");
     const openclawLaunchMessage = document.getElementById("openclawLaunchMessage");
     const openclawLaunchMeta = document.getElementById("openclawLaunchMeta");
     const poseSampleCache = new Map();
+    let openclawReloadTimer = 0;
+    let jsonCompactView = false;
+    let simpleArcFullSolution = null;
+    let simpleArcPassIndex = -1;
     const VEHICLE_BODY_LABEL = "Rp";
     const VEHICLE_STEER_LABEL = "Sp";
     const COMPLEX_CURVE_LABEL = "complexCurve";
@@ -544,7 +642,7 @@
         view: { scale: 150, offsetX: 0, offsetY: 0 },
         radius: 4,
         ui: { guides: true, vehicle: true },
-        arc: { radius: 1, deltaPsi: Math.PI / 2, angle: Math.PI / 2, length: Math.PI / 2, steerMax: Math.PI / 2, shadowCountComplex: null, shadowCountSimple: null },
+        arc: { radius: 1, deltaPsi: Math.PI / 2, angle: Math.PI / 2, length: Math.PI / 2, steerMax: Math.PI / 2, slew: 1.14, shadowCountComplex: null, shadowCountSimple: null },
         Vehicles: [createAnchorVehicle()],
         vehicleCopies: [],
         simpleVehicleCopies: [],
@@ -583,6 +681,11 @@
           arc: {
             ...defaultState.arc,
             ...(parsed.arc || {}),
+            slew: normalizeSlew(Number.isFinite(Number(parsed.arc?.slew))
+              ? Number(parsed.arc.slew)
+              : (Number.isFinite(Number(parsed.arc?.sl))
+                ? Number(parsed.arc.sl)
+                : defaultState.arc.slew)),
             shadowCountComplex: Number.isFinite(Number(parsed.arc?.shadowCountComplex))
               ? Number(parsed.arc.shadowCountComplex)
               : defaultState.arc.shadowCountComplex,
@@ -666,20 +769,40 @@
     }
 
     function applyOpenClawStatus(message) {
-      const text = (message || "").trim() || "OpenClaw control launching...";
+      const text = (message || "").trim() || "Waiting";
+      const lower = text.toLowerCase();
       if (openclawLaunchMessage) {
-        openclawLaunchMessage.textContent = text;
+        openclawLaunchMessage.textContent = lower.includes("ready") ? "Attached" : "Waiting";
       }
       if (openclawLaunchMeta) {
-        const lower = text.toLowerCase();
         if (lower.includes("ready")) {
-          openclawLaunchMeta.textContent = "CDP + Playwright attach path ready";
+          openclawLaunchMeta.textContent = "CDP + Playwright";
         } else if (lower.includes("timed out") || lower.includes("error")) {
-          openclawLaunchMeta.textContent = "Launcher reported a startup problem";
+          openclawLaunchMeta.textContent = "Launcher problem";
         } else {
-          openclawLaunchMeta.textContent = "Waiting for Chrome and MCP";
+          openclawLaunchMeta.textContent = "Chrome and MCP";
         }
       }
+    }
+
+    function scheduleOpenClawReload() {
+      if (openclawReloadTimer) {
+        return;
+      }
+      openclawReloadTimer = window.setTimeout(() => {
+        openclawReloadTimer = 0;
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.set("_ocReload", String(Date.now()));
+        window.location.replace(nextUrl.toString());
+      }, 2000);
+    }
+
+    function clearOpenClawReload() {
+      if (!openclawReloadTimer) {
+        return;
+      }
+      window.clearTimeout(openclawReloadTimer);
+      openclawReloadTimer = 0;
     }
 
     async function refreshOpenClawStatus() {
@@ -689,9 +812,11 @@
           throw new Error(`HTTP ${response.status}`);
         }
         const payload = await response.json();
+        clearOpenClawReload();
         applyOpenClawStatus(payload?.message);
       } catch {
         applyOpenClawStatus("OpenClaw control launching...");
+        scheduleOpenClawReload();
       }
     }
 
@@ -2275,11 +2400,17 @@
       return normalizeSteerMax(Number.isFinite(Number(arc?.steerMax)) ? Number(arc.steerMax) : Math.PI / 2);
     }
 
+    function getSimpleArcSlew(arc = state.arc) {
+      const slew = Number(arc?.slew);
+      return normalizeSlew(Number.isFinite(slew) ? slew : 1.14);
+    }
+
     function getSimpleArcGeometry() {
       const radius = Number(state.arc?.radius) || 1;
       const deltaPsi = getSimpleArcDeltaPsi();
       const arcLength = getSimpleArcLength();
       const steerMax = getSimpleArcSteerMax();
+      const slew = getSimpleArcSlew();
       const center = { x: 0, y: radius };
       const startAngle = radius >= 0 ? -Math.PI / 2 : Math.PI / 2;
       const turnAngle = Number.isFinite(radius) && Math.abs(radius) > 1e-9
@@ -2290,6 +2421,7 @@
         deltaPsi,
         arcLength,
         steerMax,
+        slew,
         turnAngle,
         center,
         startAngle,
@@ -2403,7 +2535,7 @@
           radius: String(Number(arc.radius) || 0),
           deltaPsi: String(Number(arc.deltaPsi) || 0),
           steerMax: String(Number(arc.steerMax) || 0),
-          initialSl: String(getSolverInitialSl(state.simpleArcSolution)),
+          slew: String(getSimpleArcSlew(state.arc)),
           vehicleX: String(Number(vehicleVector.x) || 0),
           vehicleY: String(Number(vehicleVector.y) || 0),
           vehicleAngle: String(Number(vehicleVector.angle) || 0)
@@ -2471,8 +2603,8 @@
           radius: Number(arc?.radius) || 0,
           arcLength: Number(arc?.arcLength) || 0,
           s: Number(arc?.arcLength) || 0,
-          sl: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
-          slew: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
+          sl: getSimpleArcSlew(arc),
+          slew: getSimpleArcSlew(arc),
           turnAngle: Number(arc?.turnAngle) || 0,
           finalHeading: 0,
           theta: 0,
@@ -2501,8 +2633,8 @@
         radius: Number(arc?.radius) || 0,
         arcLength: Number(arc?.arcLength) || 0,
         s: Number(arc?.arcLength) || 0,
-        sl: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
-        slew: Number(arc?.radius) ? 1 / Number(arc.radius) : 0,
+        sl: getSimpleArcSlew(arc),
+        slew: getSimpleArcSlew(arc),
         turnAngle: Number(arc?.turnAngle) || 0,
         finalHeading: 0,
         theta: 0,
@@ -3188,11 +3320,180 @@
 
     function updateJson() {
       if (jsonOutput) {
-        jsonOutput.value = JSON.stringify(buildLiveDebugSnapshot(), null, 2);
+        const snapshot = buildLiveDebugSnapshot();
+        jsonOutput.value = jsonCompactView
+          ? JSON.stringify(snapshot)
+          : JSON.stringify(snapshot, null, 2);
       }
     }
 
-    function updateDebugData(solution) {
+    function getJsonSnapshotText() {
+      return jsonOutput ? String(jsonOutput.value || "") : "";
+    }
+
+    function getJsonSnapshotObject() {
+      const text = getJsonSnapshotText();
+      if (!text) {
+        return null;
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+
+    async function copyJsonSnapshot() {
+      const snapshot = getJsonSnapshotText() || (jsonCompactView
+        ? JSON.stringify(buildLiveDebugSnapshot())
+        : JSON.stringify(buildLiveDebugSnapshot(), null, 2));
+      try {
+        await navigator.clipboard.writeText(snapshot);
+        if (copyJsonButton) {
+          const prev = copyJsonButton.textContent;
+          copyJsonButton.textContent = "Copied";
+          window.setTimeout(() => {
+            if (copyJsonButton) {
+              copyJsonButton.textContent = prev;
+            }
+          }, 1000);
+        }
+      } catch {
+        if (jsonOutput) {
+          jsonOutput.focus();
+          jsonOutput.select();
+          document.execCommand("copy");
+        }
+      }
+    }
+
+    function setJsonCompactView(compact) {
+      jsonCompactView = !!compact;
+      if (toggleJsonCompactButton) {
+        toggleJsonCompactButton.dataset.active = jsonCompactView ? "true" : "false";
+      }
+      updateJson();
+    }
+
+    function pickPassCandidate(pass) {
+      const candidates = [pass?.steerBest, pass?.pathBest].filter(Boolean);
+      return candidates.reduce((best, current) => {
+        if (!best) return current;
+        const bestScore = [
+          best?.positionError,
+          best?.headingError,
+          best?.pathLength,
+          best?.finalSteer
+        ].reduce((count, value) => count + (Number.isFinite(Number(value)) ? 1 : 0), 0);
+        const currentScore = [
+          current?.positionError,
+          current?.headingError,
+          current?.pathLength,
+          current?.finalSteer
+        ].reduce((count, value) => count + (Number.isFinite(Number(value)) ? 1 : 0), 0);
+        return currentScore > bestScore ? current : best;
+      }, null);
+    }
+
+    function getFixedSteerGuess(solution = simpleArcFullSolution || state.simpleArcTrace || state.simpleArcSolution || solveSimpleArc()) {
+      const slew = Number(solution?.arc?.slew ?? state.arc?.slew);
+      return Number.isFinite(slew) ? slew : 0;
+    }
+
+    function buildPassPreviewSolution(pass, index, sourceSolution = simpleArcFullSolution || state.simpleArcTrace || state.simpleArcSolution || solveSimpleArc()) {
+      const arc = getSimpleArcGeometry();
+      const candidate = pickPassCandidate(pass);
+      const steerGuess = getFixedSteerGuess(sourceSolution);
+      const pathLength = Math.max(0, Number(pass?.pathCenter ?? candidate?.pathLength) || 0);
+      const effectiveSlew = pathLength > 1e-12 ? steerGuess / pathLength : 0;
+      const vehicleVector = getVehicleVector() || { x: 0, y: 0, angle: 0 };
+      const sweep = integrateLinearSteerPath(steerGuess, pathLength);
+      const terminalPose = sweep?.terminalPose || sampleVehiclePoseForSlew(
+        vehicleVector,
+        pathLength,
+        effectiveSlew,
+        pathLength,
+        Number(state.radius) || 0
+      );
+      const vc = getSimpleArcVC(terminalPose);
+      const terminalRadius = getDerivedTerminalRadius(terminalPose, vc, Number(state.arc?.radius) || 0);
+      const bisector = sourceSolution?.bisector || getSimpleArcBisectorGeometry(arc);
+      const headingError = Number(candidate?.headingError);
+      const positionError = Number(candidate?.positionError);
+      const headingNormalError = Number(candidate?.headingNormalError);
+      const pathPoints = Array.isArray(sweep?.points)
+        ? sweep.points.map((point) => ({
+            x: Number(point.x) || 0,
+            y: Number(point.y) || 0,
+            heading: Number(point.heading) || 0,
+            theta: Number(point.theta) || 0
+          }))
+        : [];
+      return {
+        ...(sourceSolution || {}),
+        success: Number.isFinite(positionError) && Number.isFinite(headingError)
+          ? Math.abs(positionError) <= 1e-7 && Math.abs(headingError) <= 1e-6
+          : false,
+        edgeCase: Boolean(sourceSolution?.edgeCase),
+        edgeCaseReason: sourceSolution?.edgeCaseReason || null,
+        passIndex: Number(index) || 0,
+        pass: Number(pass?.pass ?? index) || 0,
+        passCandidate: candidate || null,
+        radius: Number(arc.radius) || 0,
+        arcLength: Number(arc.arcLength) || 0,
+        s: pathLength,
+        slew: steerGuess,
+        sl: effectiveSlew,
+        turnAngle: steerGuess,
+        theta: steerGuess,
+        finalHeading: Number.isFinite(Number(terminalPose?.angle)) ? Number(terminalPose.angle) : 0,
+        curveLength: pathLength,
+        complexCurveLength: pathLength,
+        steeredWheelTravelDistance: pathLength,
+        simpleCurveLength: 0,
+        totalTravelDistance: pathLength,
+        spTravelDistance: pathLength,
+        positionError: Number.isFinite(positionError) ? Math.abs(positionError) : NaN,
+        headingError: Number.isFinite(headingError) ? Math.abs(headingError) : NaN,
+        headingNormalAngle: Number.isFinite(Number(terminalPose?.angle))
+          ? normalizePositiveAngle(Number(terminalPose.angle) + Math.PI / 2)
+          : NaN,
+        headingNormalError: Number.isFinite(headingNormalError) ? Math.abs(headingNormalError) : NaN,
+        headingNormalSatisfied: Number.isFinite(headingNormalError) ? Math.abs(headingNormalError) <= 1e-5 : false,
+        vc,
+        terminalPose,
+        finalPose: terminalPose,
+        complexTerminalPose: terminalPose,
+        complexVc: vc,
+        terminalRadius,
+        terminalCoord: terminalPose ? createCoord(terminalPose.x, terminalPose.y, terminalPose.angle, 1, VEHICLE_BODY_LABEL, "#7dd3fc") : null,
+        complexCurve: {
+          valid: Boolean(pathPoints.length),
+          center: vc ? { ...vc } : null,
+          radius: terminalRadius,
+          startAngle: 0,
+          endAngle: 0,
+          turnAngle: finalSteer,
+          arcLength: pathLength,
+          pathPoints,
+          terminalPose: terminalPose ? {
+            x: Number(terminalPose.x) || 0,
+            y: Number(terminalPose.y) || 0,
+            angle: Number(terminalPose.angle) || 0,
+            theta: Number(terminalPose.theta) || 0
+          } : null,
+          vc,
+          bisector
+        },
+        simpleCurve: null,
+        pathPoints,
+        bisector,
+        steerMax: Number(arc.steerMax) || 0,
+        passes: Array.isArray(sourceSolution?.passes) ? sourceSolution.passes : []
+      };
+    }
+
+    function updateDebugData(solution, selectedPassIndex = -1) {
       if (!debugData) return;
       debugData.textContent = "";
       const passes = Array.isArray(solution?.passes) ? solution.passes : [];
@@ -3201,60 +3502,92 @@
         return;
       }
 
-      const lines = ["#  pass  steerGuess  pathGuess   posErr    headErr    terminal pose"];
+      if (selectedPassIndex < 0 || selectedPassIndex >= passes.length) {
+        debugData.textContent = "Pass box cleared. Press Next Pass.";
+        return;
+      }
+
+      const steerSeed = getFixedSteerGuess(solution);
+      const lines = [
+        `Selected pass: ${formatPassIndex(Number(passes[selectedPassIndex]?.pass ?? selectedPassIndex + 1))}`,
+        "#  pass  steerGuess  pathGuess   posErr    headErr    terminal pose"
+      ];
       passes.forEach((pass, index) => {
-        const candidates = [pass?.steerBest, pass?.pathBest].filter(Boolean);
-        const candidate = candidates.reduce((best, current) => {
-          if (!best) return current;
-          const bestScore = [
-            best?.positionError,
-            best?.headingError,
-            best?.pathLength,
-            best?.finalSteer
-          ].reduce((count, value) => count + (Number.isFinite(Number(value)) ? 1 : 0), 0);
-          const currentScore = [
-            current?.positionError,
-            current?.headingError,
-            current?.pathLength,
-            current?.finalSteer
-          ].reduce((count, value) => count + (Number.isFinite(Number(value)) ? 1 : 0), 0);
-          return currentScore > bestScore ? current : best;
-        }, null);
-        const steerCenter = Number(pass?.steerCenter);
-        const pathCenter = Number(pass?.pathCenter);
-        const steerGuess = Number(
-          candidate?.finalSteer
-            ?? pass?.steerBest?.finalSteer
-            ?? pass?.pathBest?.finalSteer
-            ?? pass?.steerCenter
-        );
-        const pathGuess = Number(
-          candidate?.pathLength
-            ?? pass?.pathBest?.pathLength
-            ?? pass?.steerBest?.pathLength
-            ?? pass?.pathCenter
-        );
+        const candidate = pickPassCandidate(pass);
+        const pathGuess = Number(pass?.pathCenter);
+        const steerGuess = steerSeed;
         const positionError = Number(candidate?.positionError);
         const headingError = Number(candidate?.headingError);
         const terminalPose = pass?.terminalPose || candidate?.result?.terminalPose || candidate?.terminalPose || null;
         const terminalPoseText = terminalPose
-          ? `(${formatPassDistance(terminalPose.x)}, ${formatPassDistance(terminalPose.y)}, ${formatPassAngle(terminalPose.angle)})`
-          : "(NaN, NaN, NaN)";
-        lines.push([
+          ? `(${formatPassDistance(terminalPose.x)}, ${formatPassDistance(terminalPose.y)}, ${formatPassAngle(terminalPose.angle)}, ${formatPassAngle(terminalPose.theta)})`
+          : "(NaN, NaN, NaN, NaN)";
+        const row = [
           formatPassIndex(Number(pass?.pass ?? index + 1)),
           formatPassDistance(steerGuess),
           formatPassDistance(pathGuess),
           formatPassDistance(positionError),
           formatPassAngle(headingError),
           terminalPoseText
-        ].join("  "));
+        ].join("  ");
+        lines.push(index === selectedPassIndex ? `> ${row}` : `  ${row}`);
       });
-
       debugData.textContent = lines.join("\n");
     }
 
     function updateDependentList() {
-      updateDebugData(state.simpleArcTrace || solveSimpleArc());
+      updateDebugData(state.simpleArcTrace || simpleArcFullSolution || solveSimpleArc(), simpleArcPassIndex);
+    }
+
+    function clearPassPreview() {
+      simpleArcPassIndex = -1;
+      if (simpleArcFullSolution) {
+        state.simpleArcSolution = simpleArcFullSolution;
+        syncVehicleShadows(simpleArcFullSolution);
+        const activeVehicle = getActiveVehicle();
+        if (activeVehicle) {
+          activeVehicle.finalPose = simpleArcFullSolution?.terminalPose ? { ...simpleArcFullSolution.terminalPose } : null;
+          if (Number.isFinite(Number(simpleArcFullSolution?.sl))) {
+            activeVehicle.sl = Number(simpleArcFullSolution.sl);
+          }
+        }
+      }
+      updateDependentList();
+      updateJson();
+    }
+
+    function showPassPreview(index) {
+      const solution = simpleArcFullSolution || state.simpleArcTrace || state.simpleArcSolution || solveSimpleArc();
+      const passes = Array.isArray(solution?.passes) ? solution.passes : [];
+      if (!passes.length) {
+        return false;
+      }
+      const nextIndex = Math.max(0, Math.min(Number(index) || 0, passes.length - 1));
+      const preview = buildPassPreviewSolution(passes[nextIndex], nextIndex, solution);
+      simpleArcPassIndex = nextIndex;
+      state.simpleArcSolution = preview;
+      syncVehicleShadows(preview);
+      const activeVehicle = getActiveVehicle();
+      if (activeVehicle) {
+        activeVehicle.finalPose = preview?.terminalPose ? { ...preview.terminalPose } : null;
+        if (Number.isFinite(Number(preview?.sl))) {
+          activeVehicle.sl = Number(preview.sl);
+        }
+      }
+      updateDependentList();
+      updateJson();
+      scheduleRender();
+      return true;
+    }
+
+    function advancePassPreview() {
+      const solution = simpleArcFullSolution || state.simpleArcTrace || state.simpleArcSolution || solveSimpleArc();
+      const passes = Array.isArray(solution?.passes) ? solution.passes : [];
+      if (!passes.length) {
+        return false;
+      }
+      const nextIndex = simpleArcPassIndex < 0 ? 0 : Math.min(simpleArcPassIndex + 1, passes.length - 1);
+      return showPassPreview(nextIndex);
     }
 
     function escapeHtml(value) {
@@ -3285,17 +3618,31 @@
 
     function getSolverInitialSl(source = getSimpleArcDeltaPsi()) {
       if (source && typeof source === "object") {
-        const solutionSl = Number(source.sl ?? source.slew);
+        const solutionSl = Number(source.slew ?? source.sl);
         if (Number.isFinite(solutionSl) && solutionSl > 1e-12) {
-          return Math.max(solutionSl, 1e-6);
+          return normalizeSlew(solutionSl);
         }
+        const arcSlew = Number(source.arc?.slew);
+        if (Number.isFinite(arcSlew) && arcSlew > 1e-12) {
+          return normalizeSlew(arcSlew);
+        }
+      }
+
+      const arcSlew = Number(state.arc?.slew);
+      if (Number.isFinite(arcSlew) && arcSlew > 1e-12) {
+        return normalizeSlew(arcSlew);
+      }
+
+      const solutionSl = Number(source?.sl ?? source?.slew);
+      if (Number.isFinite(solutionSl) && solutionSl > 1e-12) {
+        return normalizeSlew(solutionSl);
       }
 
       const numeric = Math.abs(Number(source));
       if (Number.isFinite(numeric) && numeric > 1e-12) {
-        return Math.max(numeric * 0.25, 1e-6);
+        return normalizeSlew(numeric * 0.25);
       }
-      return Math.PI / 4;
+      return normalizeSlew(Math.PI / 4);
     }
 
     function getDerivedTerminalRadius(terminalPose, vc, fallbackRadius = NaN) {
@@ -3450,6 +3797,16 @@
 
     function formatSteerMaxValue(value) {
       return Number(value || 0).toFixed(2);
+    }
+
+    function normalizeSlew(value) {
+      const clamped = clamp(Number(value) || 0, 0.1, Math.PI / 2);
+      const step = 0.04;
+      return Number((Math.round(clamped / step) * step).toFixed(3));
+    }
+
+    function formatSlewValue(value) {
+      return Number(value || 0).toFixed(3);
     }
 
     function formatCoordSummary(coord, pathLength = null) {
@@ -3710,6 +4067,13 @@
       if (document.activeElement !== arcSteerMaxInput) {
         arcSteerMaxInput.value = formatSteerMaxValue(steerMaxDegrees);
       }
+      const slew = getSimpleArcSlew();
+      if (arcSlewInput) {
+        arcSlewInput.step = "0.04";
+        if (document.activeElement !== arcSlewInput) {
+          arcSlewInput.value = formatSlewValue(slew);
+        }
+      }
     }
 
     function recalculateVehicleSolution(options = {}) {
@@ -3720,43 +4084,31 @@
       }
       const activeVehicle = getActiveVehicle();
       const arc = getSimpleArcGeometry();
-      const vehicleVector = getVehicleVector();
-      const geometry = {
-        ...getVehicleGeometry(),
-        radius: Number(arc.radius) || 0,
-        headingChange: Number(arc.turnAngle) || 0
-      };
-      const solved = solveVehicleSlForBisectorAlignment(vehicleVector, {
-        initialSl: getSolverInitialSl(state.simpleArcSolution),
-        maxSpan: Number.isFinite(Number(geometry?.maxHeadingChange))
-          ? Math.abs(Number(geometry.maxHeadingChange))
-          : 128,
-        geometry
-      });
-      const evaluation = solved?.evaluation || null;
-      const terminalPose = evaluation?.endPose || null;
-      const vc = evaluation?.cor || evaluation?.intersection || null;
+      const solved = solveSimpleArc(arc);
+      const terminalPose = solved?.terminalPose || null;
+      const vc = solved?.vc || solved?.complexVc || null;
       const bisector = getSimpleArcBisectorGeometry(arc);
-      const terminalPoseForCurve = terminalPose ? {
-        x: Number(terminalPose.x) || 0,
-        y: Number(terminalPose.y) || 0,
-        angle: Number(terminalPose.angle) || 0,
+      const finalPose = solved?.finalPose || solved?.terminalPose || null;
+      const terminalPoseForCurve = finalPose ? {
+        x: Number(finalPose.x) || 0,
+        y: Number(finalPose.y) || 0,
+        angle: Number(finalPose.angle) || 0,
         theta: Number(solved?.theta ?? solved?.sl) || 0
       } : null;
-      const complexTerminalPose = evaluation?.complexTerminalPose || terminalPoseForCurve || terminalPose || null;
-      const complexVc = evaluation?.complexVc || vc || null;
-      const terminalRadius = getDerivedTerminalRadius(complexTerminalPose, complexVc, Number(arc.radius) || 0);
-      const finalPose = terminalPoseForCurve || null;
-      const positionError = Number(solved?.rearDistance);
-      const headingError = Number.isFinite(Number(solved?.bodyAngleError))
-        ? Math.abs(Number(solved.bodyAngleError))
-        : (Number.isFinite(Number(solved?.bodyAlignment))
-          ? Math.abs(Math.asin(clamp(Number(solved.bodyAlignment) || 0, -1, 1)))
-          : NaN);
-      const headingNormalAngle = finalPose ? normalizePositiveAngle(Number(finalPose.angle) + Math.PI / 2) : NaN;
-      const bisectorHeading = bisector?.valid ? normalizePositiveAngle(bisector.bisectorAngle) : NaN;
-      const headingNormalError = Number.isFinite(headingNormalAngle) && Number.isFinite(bisectorHeading)
-        ? Math.abs(wrapAngle(headingNormalAngle - bisectorHeading))
+      const complexTerminalPose = solved?.complexTerminalPose || terminalPoseForCurve || terminalPose || null;
+      const complexVc = solved?.complexVc || vc || null;
+      const terminalRadius = Number.isFinite(Number(solved?.terminalRadius))
+        ? Number(solved.terminalRadius)
+        : getDerivedTerminalRadius(complexTerminalPose, complexVc, Number(arc.radius) || 0);
+      const positionError = Number(solved?.positionError);
+      const headingError = Number.isFinite(Number(solved?.headingError))
+        ? Math.abs(Number(solved.headingError))
+        : NaN;
+      const headingNormalAngle = Number.isFinite(Number(solved?.headingNormalAngle))
+        ? Number(solved.headingNormalAngle)
+        : (finalPose ? normalizePositiveAngle(Number(finalPose.angle) + Math.PI / 2) : NaN);
+      const headingNormalError = Number.isFinite(Number(solved?.headingNormalError))
+        ? Math.abs(Number(solved.headingNormalError))
         : NaN;
       const success = Boolean(solved?.success)
         && Number.isFinite(positionError)
@@ -3765,22 +4117,22 @@
         && headingError <= 1e-6;
       const result = {
         success,
-        edgeCase: false,
-        edgeCaseReason: null,
+        edgeCase: Boolean(solved?.edgeCase),
+        edgeCaseReason: solved?.edgeCaseReason || null,
         radius: Number(arc.radius) || 0,
         arcLength: Number(arc.arcLength) || 0,
         s: Number(solved?.curveLength) || 0,
-        slew: Number(solved?.slew ?? solved?.sl) || 0,
+        slew: Number(solved?.slew ?? solved?.sl) || getSimpleArcSlew(arc),
         sl: Number(solved?.sl) || 0,
-        turnAngle: Number(solved?.headingChange) || 0,
+        turnAngle: Number(solved?.turnAngle ?? solved?.headingChange) || 0,
         theta: Number(solved?.theta ?? terminalPoseForCurve?.theta) || 0,
         finalHeading: Number(finalPose?.angle) || 0,
         curveLength: Number(solved?.curveLength) || 0,
-        complexCurveLength: Number(solved?.curveLength) || 0,
+        complexCurveLength: Number(solved?.complexCurveLength ?? solved?.curveLength) || 0,
         steeredWheelTravelDistance: Number(solved?.steeredWheelTravelDistance ?? solved?.curveLength) || 0,
-        simpleCurveLength: 0,
-        totalTravelDistance: Number(solved?.curveLength) || 0,
-        spTravelDistance: Number(solved?.curveLength) || 0,
+        simpleCurveLength: Number(solved?.simpleCurveLength) || 0,
+        totalTravelDistance: Number(solved?.totalTravelDistance) || (Number(solved?.curveLength) || 0),
+        spTravelDistance: Number(solved?.spTravelDistance) || (Number(solved?.curveLength) || 0),
         positionError: Number.isFinite(positionError) ? Math.abs(positionError) : NaN,
         headingError,
         headingNormalAngle,
@@ -3807,18 +4159,19 @@
           bisector
         },
         simpleCurve: null,
-        pathPoints: [],
+        pathPoints: Array.isArray(solved?.pathPoints) ? solved.pathPoints : [],
         bisector,
         steerMax: Number(arc.steerMax) || 0,
-        passes: Array.isArray(solved?.passes)
-          ? solved.passes
-          : (solved?.evaluation ? [solved.evaluation] : [])
+        passes: Array.isArray(solved?.passes) ? solved.passes : []
       };
-      state.simpleArcTrace = solveSimpleArc();
+      state.simpleArcTrace = solved;
+      simpleArcFullSolution = result;
+      simpleArcPassIndex = -1;
       state.simpleArcSolution = result;
       state.arc.deltaPsi = getSimpleArcDeltaPsi();
       state.arc.angle = state.arc.deltaPsi;
       state.arc.length = getSimpleArcLength();
+      state.arc.slew = getSimpleArcSlew();
       syncVehicleShadows(result);
       if (activeVehicle) {
         activeVehicle.finalPose = result?.terminalPose ? { ...result.terminalPose } : null;
@@ -3828,7 +4181,18 @@
       }
       syncInputs();
       if (persist) saveState();
-      if (render) scheduleRender();
+      state.simpleArcSolution = result;
+      if (Array.isArray(result.passes) && result.passes.length) {
+        simpleArcPassIndex = 0;
+        updateDebugData(result, 0);
+        updateJson();
+        if (render) scheduleRender();
+      } else {
+        simpleArcPassIndex = -1;
+        updateDependentList();
+        updateJson();
+        if (render) scheduleRender();
+      }
       return result;
     }
 
@@ -3897,6 +4261,30 @@
       syncInputs();
       recalculateVehicleSolution();
     });
+
+    if (arcSlewInput) {
+      arcSlewInput.addEventListener("input", () => {
+        const value = Number(arcSlewInput.value);
+        state.arc.slew = normalizeSlew(Number.isFinite(value) ? value : Math.PI / 4);
+        arcSlewInput.step = "0.04";
+        syncInputs();
+        recalculateVehicleSolution();
+      });
+
+      arcSlewInput.addEventListener("blur", () => {
+        state.arc.slew = normalizeSlew(state.arc.slew);
+        arcSlewInput.step = "0.04";
+        syncInputs();
+        recalculateVehicleSolution();
+      });
+
+      arcSlewInput.addEventListener("focus", () => {
+        const slew = normalizeSlew(getSimpleArcSlew());
+        arcSlewInput.step = "0.04";
+        arcSlewInput.value = formatSlewValue(slew);
+        arcSlewInput.select();
+      });
+    }
 
     window.addEventListener("keydown", (event) => {
       if ((event.key === "Delete" || event.key === "Backspace") && state.selectedId) {
@@ -4047,6 +4435,19 @@
       if (initialized) return;
       renderStatus.textContent = "Render: booting";
       applyOpenClawStatus("OpenClaw control launching...");
+      if (nextPassButton) {
+        nextPassButton.addEventListener("click", () => {
+          advancePassPreview();
+        });
+      }
+      if (copyJsonButton) {
+        copyJsonButton.addEventListener("click", copyJsonSnapshot);
+      }
+      if (toggleJsonCompactButton) {
+        toggleJsonCompactButton.addEventListener("click", () => {
+          setJsonCompactView(!jsonCompactView);
+        });
+      }
       refreshOpenClawStatus();
       if (!openclawStatusPoll) {
         openclawStatusPoll = window.setInterval(refreshOpenClawStatus, 5000);

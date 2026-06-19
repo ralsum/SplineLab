@@ -40,6 +40,7 @@ type
     FinalSteer: Double;
     PathLength: Double;
     Slew: Double;
+    SignedPositionError: Double;
     PositionError: Double;
     HeadingError: Double;
     HeadingNormalAngle: Double;
@@ -292,26 +293,31 @@ end;
 function EvaluateCandidate(
   const Geometry: TArcGeometry;
   const Bisector: TArcBisectorGeometry;
-  const FinalSteer, PathLength: Double
+  const Slew, TurnDirection, PathLength: Double
 ): TTraceCandidate;
 var
   TerminalPose: TVehiclePose;
+  Path: TLinearSteerPath;
   Vc: TServerPoint2D;
   BodyDirection, Front: TServerPoint2D;
   SteerDirection: TServerPoint2D;
   SignedPositionError: Double;
   TerminalHeading, HeadingNormalAngle, BisectorHeading: Double;
+  FinalSteer: Double;
 begin
+  FinalSteer := TurnDirection * Slew * PathLength;
   Result.FinalSteer := FinalSteer;
   Result.PathLength := PathLength;
-  Result.Slew := IfThen(Abs(PathLength) > 1e-12, Abs(FinalSteer) / Abs(PathLength), Abs(FinalSteer));
+  Result.Slew := Slew;
   Result.SteerAtLimit := Abs(FinalSteer) >= Geometry.SteerMax - 1e-6;
-  TerminalPose := IntegrateLinearSteerPath(IfThen(Result.SteerAtLimit, Geometry.SteerMax, FinalSteer), PathLength).TerminalPose;
-  Result.Path := IntegrateLinearSteerPath(IfThen(Result.SteerAtLimit, Geometry.SteerMax, FinalSteer), PathLength);
+  Path := IntegrateLinearSteerPath(FinalSteer, PathLength);
+  Result.Path := Path;
+  TerminalPose := Path.TerminalPose;
   Vc := GetSimpleArcVC(TerminalPose);
   Result.Vc := Vc;
 
   SignedPositionError := SignedDistanceToLine(Vc, Bisector.BisectorOrigin, Bisector.BisectorDir);
+  Result.SignedPositionError := SignedPositionError;
   Result.PositionError := Abs(SignedPositionError);
   TerminalHeading := TerminalPose.Angle;
   Result.HeadingError := AngleDistanceToPerpendicular(TerminalHeading, Bisector.BisectorAngle);
@@ -323,27 +329,52 @@ begin
   Result.Path.TerminalPose := TerminalPose;
 end;
 
-function CandidateBetter(const Candidate, CurrentBest: TTraceCandidate): Boolean;
+function CandidateBetter(
+  const Candidate, CurrentBest: TTraceCandidate;
+  const Geometry: TArcGeometry;
+  const Bisector: TArcBisectorGeometry
+): Boolean;
+var
+  CandidateScore, CurrentScore: Double;
 begin
+  CandidateScore := Abs(Candidate.SignedPositionError);
+  CurrentScore := Abs(CurrentBest.SignedPositionError);
+  if CandidateScore < CurrentScore - 1e-12 then
+    Exit(True);
+  if CandidateScore > CurrentScore + 1e-12 then
+    Exit(False);
+
   if Candidate.PositionError < CurrentBest.PositionError - 1e-12 then
     Exit(True);
   if Candidate.PositionError > CurrentBest.PositionError + 1e-12 then
     Exit(False);
 
-  if Candidate.Slew < CurrentBest.Slew - 1e-12 then
+  if Candidate.HeadingNormalError < CurrentBest.HeadingNormalError - 1e-12 then
     Exit(True);
-  if Candidate.Slew > CurrentBest.Slew + 1e-12 then
+  if Candidate.HeadingNormalError > CurrentBest.HeadingNormalError + 1e-12 then
+    Exit(False);
+
+  if Candidate.HeadingError < CurrentBest.HeadingError - 1e-12 then
+    Exit(True);
+  if Candidate.HeadingError > CurrentBest.HeadingError + 1e-12 then
+    Exit(False);
+
+  if Abs(Candidate.SignedPositionError) < Abs(CurrentBest.SignedPositionError) - 1e-12 then
+    Exit(True);
+  if Abs(Candidate.SignedPositionError) > Abs(CurrentBest.SignedPositionError) + 1e-12 then
+    Exit(False);
+
+  if Candidate.PathLength < CurrentBest.PathLength - 1e-12 then
+    Exit(True);
+  if Candidate.PathLength > CurrentBest.PathLength + 1e-12 then
     Exit(False);
 
   if Candidate.SteerAtLimit <> CurrentBest.SteerAtLimit then
     Exit(not Candidate.SteerAtLimit);
 
-  if Candidate.HeadingNormalSatisfied <> CurrentBest.HeadingNormalSatisfied then
-    Exit(Candidate.HeadingNormalSatisfied);
-
-  if Candidate.HeadingError < CurrentBest.HeadingError - 1e-12 then
+  if Candidate.Slew < CurrentBest.Slew - 1e-12 then
     Exit(True);
-  if Candidate.HeadingError > CurrentBest.HeadingError + 1e-12 then
+  if Candidate.Slew > CurrentBest.Slew + 1e-12 then
     Exit(False);
   Result := False;
 end;
@@ -356,16 +387,15 @@ var
   Geometry: TArcGeometry;
   Bisector: TArcBisectorGeometry;
   TurnDirection: Double;
-  InitialSteer, InitialPathLength, MaxPathLength, MaxSteer: Double;
-  SteerMin, SteerMaxBound: Double;
+  InitialPathLength, MaxPathLength, MaxSteer, MaxPathBySteer: Double;
   PositionTolerance, HeadingTolerance, HeadingNormalTolerance: Double;
   SteerCenter, PathCenter, SteerSpan, PathSpan: Double;
-  DesiredSlew: Double;
+  DesiredSlew, FixedSlew: Double;
   Best: TTraceCandidate;
   HasBest: Boolean;
   Trace: array of TTracePass;
-  PassCount, PathSamples, SteerSamples, Pass, J, I: Integer;
-  Shrink, SteerFloor, PathFloor: Double;
+  PassCount, PathSamples, Pass, J, I: Integer;
+  Shrink, PathFloor: Double;
   PathSearchBest, SteerSearchBest: TTraceCandidate;
   PathSearchLeft, PathSearchRight, SteerSearchLeft, SteerSearchRight: Double;
   PathLength, FinalSteer: Double;
@@ -375,61 +405,100 @@ var
   LocalBestX, LocalBestY: Double;
   PathLeft, PathRight, SteerLeft, SteerRight, Width, Step, XValue, YValue: Double;
 
-  function SearchPathCandidates(const FixedSteer, Center, Span: Double; out BestCandidate: TTraceCandidate; out LeftValue, RightValue: Double): Boolean;
+  function SearchPathCandidates(const FixedSlew, TurnDir, Center, Span: Double; out BestCandidate: TTraceCandidate; out LeftValue, RightValue: Double): Boolean;
   var
     Samples, Index: Integer;
-    PathMin, PathMax, PathT, CandidateSteer: Double;
-    Candidate: TTraceCandidate;
+    PathMin, PathMax, PathT: Double;
+    Candidate, PrevCandidate, MidCandidate: TTraceCandidate;
     BestLocal: Boolean;
+    HasPrev, HasBracket: Boolean;
+    LeftCandidate, RightCandidate: TTraceCandidate;
+    LeftError, RightError, MidError: Double;
+    Iteration: Integer;
   begin
     Samples := Max(5, PathSamples);
     PathMin := Max(1e-9, PathFloor);
-    PathMax := Max(1e-9, MaxPathLength);
+    PathMax := Max(PathMin, MaxPathBySteer);
     LeftValue := ClampDouble(Center - Span, PathMin, PathMax);
     RightValue := ClampDouble(Center + Span, PathMin, PathMax);
     BestLocal := False;
+    HasPrev := False;
+    HasBracket := False;
     BestCandidate := Default(TTraceCandidate);
     for Index := 0 to Samples - 1 do
     begin
       PathT := IfThen(Samples = 1, 0, Index / (Samples - 1));
       PathLength := LeftValue + (RightValue - LeftValue) * PathT;
-      Candidate := EvaluateCandidate(Geometry, Bisector, FixedSteer, PathLength);
-      Candidate.FinalSteer := FixedSteer;
+      Candidate := EvaluateCandidate(Geometry, Bisector, FixedSlew, TurnDir, PathLength);
       Candidate.PathLength := PathLength;
-      if (not BestLocal) or CandidateBetter(Candidate, BestCandidate) then
+      if (not BestLocal) or CandidateBetter(Candidate, BestCandidate, Geometry, Bisector) then
       begin
         BestCandidate := Candidate;
         BestLocal := True;
       end;
+      if HasPrev then
+      begin
+        if (PrevCandidate.SignedPositionError = 0) or (Candidate.SignedPositionError = 0) then
+        begin
+          if Abs(Candidate.SignedPositionError) <= Abs(PrevCandidate.SignedPositionError) then
+          begin
+            BestCandidate := Candidate;
+            BestLocal := True;
+          end
+          else
+          begin
+            BestCandidate := PrevCandidate;
+            BestLocal := True;
+          end;
+          HasBracket := True;
+          Break;
+        end;
+        if (PrevCandidate.SignedPositionError < 0) <> (Candidate.SignedPositionError < 0) then
+        begin
+          LeftValue := PrevCandidate.PathLength;
+          RightValue := Candidate.PathLength;
+          LeftCandidate := PrevCandidate;
+          RightCandidate := Candidate;
+          LeftError := PrevCandidate.SignedPositionError;
+          RightError := Candidate.SignedPositionError;
+          HasBracket := True;
+          Break;
+        end;
+      end;
+      PrevCandidate := Candidate;
+      HasPrev := True;
     end;
-    Result := BestLocal;
-  end;
 
-  function SearchSteerCandidates(const FixedPathLength, Center, Span: Double; out BestCandidate: TTraceCandidate; out LeftValue, RightValue: Double): Boolean;
-  var
-    Samples, Index: Integer;
-    SteerT, CandidateSteer: Double;
-    Candidate: TTraceCandidate;
-    BestLocal: Boolean;
-  begin
-    Samples := Max(5, SteerSamples);
-    LeftValue := ClampDouble(Center - Span, SteerMin, SteerMaxBound);
-    RightValue := ClampDouble(Center + Span, SteerMin, SteerMaxBound);
-    BestLocal := False;
-    BestCandidate := Default(TTraceCandidate);
-    for Index := 0 to Samples - 1 do
+    if HasBracket and (LeftError * RightError < 0) then
     begin
-      SteerT := IfThen(Samples = 1, 0, Index / (Samples - 1));
-      CandidateSteer := LeftValue + (RightValue - LeftValue) * SteerT;
-      Candidate := EvaluateCandidate(Geometry, Bisector, CandidateSteer, FixedPathLength);
-      Candidate.FinalSteer := CandidateSteer;
-      Candidate.PathLength := FixedPathLength;
-      if (not BestLocal) or CandidateBetter(Candidate, BestCandidate) then
+      for Iteration := 0 to 15 do
       begin
-        BestCandidate := Candidate;
-        BestLocal := True;
+        PathLength := (LeftValue + RightValue) * 0.5;
+        MidCandidate := EvaluateCandidate(Geometry, Bisector, FixedSlew, TurnDir, PathLength);
+        MidCandidate.PathLength := PathLength;
+        MidError := MidCandidate.SignedPositionError;
+        if (not BestLocal) or CandidateBetter(MidCandidate, BestCandidate, Geometry, Bisector) then
+        begin
+          BestCandidate := MidCandidate;
+          BestLocal := True;
+        end;
+        if Abs(MidError) <= 1e-7 then
+          Break;
+        if (LeftError < 0) <> (MidError < 0) then
+        begin
+          RightValue := PathLength;
+          RightCandidate := MidCandidate;
+          RightError := MidError;
+        end
+        else
+        begin
+          LeftValue := PathLength;
+          LeftCandidate := MidCandidate;
+          LeftError := MidError;
+        end;
       end;
     end;
+
     Result := BestLocal;
   end;
 
@@ -468,26 +537,23 @@ begin
   InitialPathLength := Max(Max(Abs(Result.ArcLength), Abs(Radius) * 1.5), 0.5);
   MaxPathLength := Max(Max(Abs(Result.ArcLength) * 8, Abs(Radius) * 12), 8);
   MaxSteer := Max(DegToRad(45), Min(Abs(SteerMax), Pi / 2 - 1e-9));
-  SteerMin := IfThen(TurnDirection >= 0, 0, -MaxSteer);
-  SteerMaxBound := IfThen(TurnDirection >= 0, MaxSteer, 0);
   DesiredSlew := Abs(InitialSl);
   if DesiredSlew <= 1e-12 then
-    DesiredSlew := IfThen(Abs(InitialPathLength) > 1e-12, MaxSteer / Abs(InitialPathLength), MaxSteer);
-  InitialSteer := ClampDouble(TurnDirection * DesiredSlew * InitialPathLength, SteerMin, SteerMaxBound);
-  PositionTolerance := 1e-5;
+    DesiredSlew := Pi / 4;
+  FixedSlew := DesiredSlew;
+  MaxPathBySteer := IfThen(DesiredSlew > 1e-12, MaxSteer / DesiredSlew, MaxPathLength);
+  PositionTolerance := 1e-3;
   HeadingTolerance := 1e-5;
   HeadingNormalTolerance := 1e-5;
-  SteerCenter := ClampDouble(InitialSteer, SteerMin, SteerMaxBound);
-  PathCenter := ClampDouble(InitialPathLength, 1e-9, MaxPathLength);
-  SteerSpan := Max(Pi / 6, Abs(InitialSteer) * 0.75 + Pi / 12);
+  SteerCenter := TurnDirection * DesiredSlew * InitialPathLength;
+  PathCenter := ClampDouble(InitialPathLength, 1e-9, Min(MaxPathLength, MaxPathBySteer));
+  SteerSpan := 0;
   PathSpan := Max(Max(Abs(InitialPathLength) * 0.75, Abs(Result.ArcLength)), 0.75);
   SetLength(Trace, 0);
   HasBest := False;
   PassCount := 5;
   PathSamples := 9;
-  SteerSamples := 9;
   Shrink := 0.25;
-  SteerFloor := Pi / 180;
   PathFloor := 1e-3;
   Best := Default(TTraceCandidate);
 
@@ -497,41 +563,34 @@ begin
     begin
       PassCount := 10;
       PathSamples := 21;
-      SteerSamples := 21;
-      Shrink := 0.2;
-      SteerFloor := 1e-7;
+      Shrink := 0.25;
       PathFloor := 1e-7;
     end;
 
     for Pass := 0 to PassCount - 1 do
     begin
-      PathBestValid := SearchPathCandidates(SteerCenter, PathCenter, PathSpan, PathSearchBest, PathSearchLeft, PathSearchRight);
+      PathBestValid := SearchPathCandidates(FixedSlew, TurnDirection, PathCenter, PathSpan, PathSearchBest, PathSearchLeft, PathSearchRight);
       if PathBestValid then
       begin
         PathCenter := PathSearchBest.PathLength;
         if PathSearchBest.PositionError <= PositionTolerance * 4 then
           PathSpan := Max((PathSearchRight - PathSearchLeft) * Shrink, PathFloor)
         else
-          PathSpan := Min(MaxPathLength, Max(PathSearchBest.PathLength * 0.5, PathSpan * 1.25));
+          PathSpan := Min(Min(MaxPathLength, MaxPathBySteer), Max(PathSearchBest.PathLength * 0.5, PathSpan * 1.25));
       end;
-
-      SteerBestValid := SearchSteerCandidates(PathCenter, SteerCenter, SteerSpan, SteerSearchBest, SteerSearchLeft, SteerSearchRight);
+      SteerCenter := TurnDirection * FixedSlew * PathCenter;
+      SteerSpan := 0;
+      SteerBestValid := PathBestValid;
       if SteerBestValid then
       begin
-        SteerCenter := SteerSearchBest.FinalSteer;
-        if SteerSearchBest.PositionError <= PositionTolerance * 4 then
-          SteerSpan := Max((SteerSearchRight - SteerSearchLeft) * Shrink, SteerFloor)
-        else
-          SteerSpan := Max(SteerSpan, Abs(SteerSearchBest.FinalSteer) * 0.5 + SteerFloor);
-        if (not HasBest) or CandidateBetter(SteerSearchBest, Best) then
+        SteerSearchBest := PathSearchBest;
+        SteerSearchBest.FinalSteer := TurnDirection * FixedSlew * SteerSearchBest.PathLength;
+        if (not HasBest) or CandidateBetter(SteerSearchBest, Best, Geometry, Bisector) then
         begin
           Best := SteerSearchBest;
           HasBest := True;
         end;
       end;
-
-      if (not SteerBestValid) or (SteerSearchBest.PositionError > PositionTolerance * 4) then
-        SteerCenter := ClampDouble(TurnDirection * DesiredSlew * PathCenter, SteerMin, SteerMaxBound);
 
       SetLength(Trace, Length(Trace) + 1);
       Trace[High(Trace)].Pass := Length(Trace) - 1;
@@ -566,7 +625,7 @@ begin
     Exit;
   end;
 
-  Result.Success := (Best.PositionError <= PositionTolerance) and (Best.HeadingNormalSatisfied) and (Best.HeadingError <= HeadingTolerance);
+  Result.Success := Best.PositionError <= PositionTolerance;
   Result.EdgeCase := (Abs(Best.FinalSteer) >= MaxSteer - 1e-6) and (Best.PositionError > PositionTolerance);
   if Result.EdgeCase then
     Result.EdgeCaseReason := 'steer-max-reached-before-bisector'

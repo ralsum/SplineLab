@@ -384,7 +384,7 @@ begin
     ArcRadius := ParseQueryFloat(Request.URI, 'radius', 1);
     ArcDeltaPsi := ParseQueryFloat(Request.URI, 'deltaPsi', Pi / 2);
     ArcSteerMax := ParseQueryFloat(Request.URI, 'steerMax', Pi / 2);
-    InitialSl := ParseQueryFloat(Request.URI, 'initialSl', 0.01);
+    InitialSl := ParseQueryFloat(Request.URI, 'slew', ParseQueryFloat(Request.URI, 'initialSl', 1.14));
     BaseX := ParseQueryFloat(Request.URI, 'vehicleX', 0);
     BaseY := ParseQueryFloat(Request.URI, 'vehicleY', 0);
     BaseAngle := ParseQueryFloat(Request.URI, 'vehicleAngle', 0);
