@@ -357,7 +357,7 @@ begin
     BaseY := ParseQueryFloat(Request.URI, 'baseY', 0);
     BaseAngle := ParseQueryFloat(Request.URI, 'baseAngle', 0);
     Distance := ParseQueryFloat(Request.URI, 'distance', 0);
-    Slew := ParseQueryFloat(Request.URI, 'slew', 0);
+    Slew := ParseQueryFloat(Request.URI, 'headingChangePerDistance', ParseQueryFloat(Request.URI, 'slew', 0));
     CurveLength := ParseQueryFloat(Request.URI, 'curveLength', 0);
     Radius := ParseQueryFloat(Request.URI, 'radius', 0);
     Pose := SampleVehiclePoseForSlew(BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius);

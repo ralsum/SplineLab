@@ -22,20 +22,20 @@ function MakeVehiclePose(
   const X, Y, Angle, Theta, Radius, CurveLength: Double
 ): TVehiclePose;
 
-function IntegrateVehiclePoseForSlew(const Slew, Distance: Double): TVehiclePose;
+function IntegrateVehiclePoseForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
 procedure InitializeBesselTables;
 
 function SampleVehiclePoseForSlew(
   const BasePose: TVehiclePose;
-  const Distance, Slew, CurveLength, Radius: Double
+  const Distance, HeadingChangePerDistance, CurveLength, Radius: Double
 ): TVehiclePose; overload;
 
 function SampleVehiclePoseForSlew(
-  const BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius: Double
+  const BaseX, BaseY, BaseAngle, Distance, HeadingChangePerDistance, CurveLength, Radius: Double
 ): TVehiclePose; overload;
 
-function IntegrateVehiclePoseFrontForSlew(const Slew, Distance: Double): TVehiclePose;
-function IntegrateVehiclePoseFallbackForSlew(const Slew, Distance: Double): TVehiclePose;
+function IntegrateVehiclePoseFrontForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
+function IntegrateVehiclePoseFallbackForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
 
 implementation
 
@@ -384,24 +384,29 @@ begin
   TryGetBesselTableFromGrid(Slew, Table);
 end;
 
-function IntegrateVehiclePoseFrontForSlew(const Slew, Distance: Double): TVehiclePose;
+function IntegrateVehiclePoseFrontForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
 var
-  SafeSlew, InvSlew, Phase, Travel, PhaseSpan: Double;
+  SafeSlew, InvSlew, Phase, Travel, PhaseSpan, HeadingChange: Double;
   HarmonicLimit, M, BesselOrder: Integer;
   BesselValues: TBesselTable;
   Integral, Harmonic, Term, BesselTermC, FrontVector: TComplex;
   BesselValue, BesselTerm: Double;
   BodyVector, LocalRear: TComplex;
 begin
-  if Abs(Slew) < SlewFallbackThreshold then
-    Result := IntegrateVehiclePoseFallbackForSlew(Slew, Distance)
+  if Abs(Distance) < 1e-12 then
+    Exit(MakeVehiclePose(0, 0, 0, 0, 0, 0));
+
+  SafeSlew := HeadingChangePerDistance;
+  if Abs(SafeSlew) < SlewFallbackThreshold then
+    Result := IntegrateVehiclePoseFallbackForSlew(Distance, HeadingChangePerDistance)
   else
   begin
-    SafeSlew := NonZeroDenominator(Slew);
+    SafeSlew := NonZeroDenominator(SafeSlew);
     InvSlew := 1 / SafeSlew;
     Phase := InvSlew;
     Travel := Distance;
-    PhaseSpan := SafeSlew * Travel;
+    HeadingChange := SafeSlew * Distance;
+    PhaseSpan := HeadingChange;
     HarmonicLimit := Max(12, Ceil(Abs(InvSlew) + 24));
     HarmonicLimit := Round(ClampDouble(HarmonicLimit, 12, MaxBesselOrder - 1));
     BuildBesselTable(SafeSlew, HarmonicLimit + 1, BesselValues);
@@ -444,23 +449,28 @@ begin
     Result.X := LocalRear.Re;
     Result.Y := LocalRear.Im;
     Result.Angle := (2 * Sqr(Sin(PhaseSpan / 2))) / SafeSlew;
-    Result.Theta := SafeSlew * Travel;
+    Result.Theta := HeadingChange;
     Result.Radius := 0;
     Result.CurveLength := 0;
   end;
 end;
 
-function IntegrateVehiclePoseFallbackForSlew(const Slew, Distance: Double): TVehiclePose;
+function IntegrateVehiclePoseFallbackForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
 var
-  Travel, BodyDelta, HalfTravel, S, Phase: Double;
+  Travel, Slew, HeadingChange, BodyDelta, HalfTravel, S, Phase: Double;
   I: Integer;
   FrontX, FrontY: Double;
 begin
   Travel := Distance;
-  if Slew = 0 then
-    BodyDelta := 0
-  else
-    BodyDelta := (2 * Sqr(Sin((Slew * Travel) / 2))) / NonZeroDenominator(Slew);
+  if Abs(Distance) < 1e-12 then
+  begin
+    Result := MakeVehiclePose(0, 0, 0, 0, 0, 0);
+    Exit;
+  end;
+
+  Slew := HeadingChangePerDistance;
+  HeadingChange := Slew * Distance;
+  BodyDelta := (2 * Sqr(Sin(HeadingChange / 2))) / NonZeroDenominator(Slew);
 
   HalfTravel := Travel / 2;
   FrontX := 1;
@@ -469,10 +479,7 @@ begin
   for I := Low(QuadratureNodes) to High(QuadratureNodes) do
   begin
     S := HalfTravel * (QuadratureNodes[I] + 1);
-    if Slew = 0 then
-      Phase := 0
-    else
-      Phase := Slew * S + (2 * Sqr(Sin((Slew * S) / 2))) / NonZeroDenominator(Slew);
+    Phase := Slew * S + (2 * Sqr(Sin((HeadingChange * S) / (2 * Distance)))) / NonZeroDenominator(Slew);
 
     FrontX := FrontX + QuadratureWeights[I] * Cos(Phase) * HalfTravel;
     FrontY := FrontY + QuadratureWeights[I] * Sin(Phase) * HalfTravel;
@@ -481,23 +488,25 @@ begin
   Result.X := FrontX - Cos(BodyDelta);
   Result.Y := FrontY - Sin(BodyDelta);
   Result.Angle := BodyDelta;
-  Result.Theta := Slew * Travel;
+  Result.Theta := HeadingChange;
   Result.Radius := 0;
   Result.CurveLength := 0;
 end;
 
-function IntegrateVehiclePoseForSlew(const Slew, Distance: Double): TVehiclePose;
+function IntegrateVehiclePoseForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
 begin
-  // Small slew values are numerically safer with the quadrature path.
-  if Abs(Slew) < SlewFallbackThreshold then
-    Result := IntegrateVehiclePoseFallbackForSlew(Slew, Distance)
+  // Small heading-change-per-distance values are numerically safer with the quadrature path.
+  if Abs(Distance) < 1e-12 then
+    Result := MakeVehiclePose(0, 0, 0, 0, 0, 0)
+  else if Abs(HeadingChangePerDistance) < SlewFallbackThreshold then
+    Result := IntegrateVehiclePoseFallbackForSlew(Distance, HeadingChangePerDistance)
   else
-    Result := IntegrateVehiclePoseFrontForSlew(Slew, Distance);
+    Result := IntegrateVehiclePoseFrontForSlew(Distance, HeadingChangePerDistance);
 end;
 
 function SampleVehiclePoseForSlew(
   const BasePose: TVehiclePose;
-  const Distance, Slew, CurveLength, Radius: Double
+  const Distance, HeadingChangePerDistance, CurveLength, Radius: Double
 ): TVehiclePose;
 begin
   Result := SampleVehiclePoseForSlew(
@@ -505,20 +514,20 @@ begin
     BasePose.Y,
     BasePose.Angle,
     Distance,
-    Slew,
+    HeadingChangePerDistance,
     CurveLength,
     Radius
   );
 end;
 
 function SampleVehiclePoseForSlew(
-  const BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius: Double
+  const BaseX, BaseY, BaseAngle, Distance, HeadingChangePerDistance, CurveLength, Radius: Double
 ): TVehiclePose;
 var
   LocalPose: TVehiclePose;
   CosBase, SinBase: Double;
 begin
-  LocalPose := IntegrateVehiclePoseForSlew(Slew, Distance);
+  LocalPose := IntegrateVehiclePoseForSlew(Distance, HeadingChangePerDistance);
 
   CosBase := Cos(BaseAngle);
   SinBase := Sin(BaseAngle);

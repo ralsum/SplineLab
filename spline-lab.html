@@ -317,11 +317,15 @@
       color: var(--muted);
     }
     .controls {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 2px;
     }
     .control {
+      flex: 1 1 0;
+      min-width: 0;
       display: grid;
       gap: 6px;
     }
@@ -468,7 +472,11 @@
                   <input id="arcSteerMax" type="number" min="45" max="90" step="1" value="90.00" inputmode="decimal" />
                 </div>
                 <div class="control">
-                  <label for="arcSlew">Slew</label>
+                  <label for="swtd">Swtd</label>
+                  <input id="swtd" type="number" min="-100" max="100" step="0.001" value="0.000" inputmode="decimal" />
+                </div>
+                <div class="control">
+                  <label for="arcSlew">Heading Change / Distance</label>
                   <input id="arcSlew" type="number" min="0.1" max="1.571" step="0.04" value="0.785" inputmode="decimal" />
                 </div>
               </div>
@@ -526,6 +534,7 @@
     const arcAngleInput = document.getElementById("arcAngle");
     const arcSteerMaxInput = document.getElementById("arcSteerMax");
     const arcSlewInput = document.getElementById("arcSlew");
+    const swtdInput = document.getElementById("swtd");
     const debugData = document.getElementById("debugData");
     const nextPassButton = document.getElementById("nextPassButton");
     const jsonOutput = document.getElementById("jsonOutput");
@@ -641,7 +650,7 @@
       return {
         view: { scale: 150, offsetX: 0, offsetY: 0 },
         radius: 4,
-        ui: { guides: true, vehicle: true },
+        ui: { guides: true, vehicle: true, swtd: 0 },
         arc: { radius: 1, deltaPsi: Math.PI / 2, angle: Math.PI / 2, length: Math.PI / 2, steerMax: Math.PI / 2, slew: 1.14, shadowCountComplex: null, shadowCountSimple: null },
         Vehicles: [createAnchorVehicle()],
         vehicleCopies: [],
@@ -677,7 +686,12 @@
               ? Number(parsedVehicle.radius)
               : defaultState.radius),
           view: { ...defaultState.view, ...(parsed.view || {}) },
-          ui: { ...defaultState.ui, ...(parsed.ui || {}), vehicle: true },
+          ui: {
+            ...defaultState.ui,
+            ...(parsed.ui || {}),
+            vehicle: true,
+            swtd: normalizeSwtdValue(parsed.ui?.swtd ?? defaultState.ui.swtd)
+          },
           arc: {
             ...defaultState.arc,
             ...(parsed.arc || {}),
@@ -766,6 +780,12 @@
         ...vector,
         angle: Math.abs(angle) > Math.PI * 2 ? degToRad(angle) : angle
       };
+    }
+
+    function normalizeSwtdValue(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 0;
+      return clamp(numeric, -100, 100);
     }
 
     function applyOpenClawStatus(message) {
@@ -944,12 +964,23 @@
       return values;
     }
 
-    function integrateVehiclePoseFront(vehicleVector, distance) {
-      const slew = Number(state.vehicle.sl) || 0;
+    function integrateVehiclePoseFront(vehicleVector, distance, headingChangePerDistance = 0) {
+      if (Math.abs(distance) < 1e-12) {
+        return {
+          x: 0,
+          y: 0,
+          angle: 0,
+          theta: 0,
+          radius: 0,
+          curveLength: 0
+        };
+      }
+      const slew = headingChangePerDistance;
+      const headingChange = slew * distance;
       const invSlew = 1 / slew;
       const phase = invSlew;
       const travel = distance;
-      const phaseSpan = slew * travel;
+      const phaseSpan = headingChange;
       const harmonicLimit = Math.max(12, Math.ceil(Math.abs(invSlew) + 24));
       const besselValues = getBesselTable(slew, harmonicLimit + 1);
       let integral = { re: 0, im: 0 };
@@ -983,14 +1014,25 @@
         x: localRear.re,
         y: localRear.im,
         angle: bodyDelta,
-        theta: slew * travel
+        theta: headingChange
       };
     }
 
-    function integrateVehiclePoseFallback(vehicleVector, distance) {
-      const slew = Number(state.vehicle.sl) || 0;
+    function integrateVehiclePoseFallback(vehicleVector, distance, headingChangePerDistance = 0) {
+      if (Math.abs(distance) < 1e-12) {
+        return {
+          x: 0,
+          y: 0,
+          angle: 0,
+          theta: 0,
+          radius: 0,
+          curveLength: 0
+        };
+      }
+      const slew = headingChangePerDistance;
+      const headingChange = slew * distance;
       const travel = distance;
-      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin((slew * travel) / 2) ** 2) / slew;
+      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin(headingChange / 2) ** 2) / slew;
       const integralNodes = vehiclePoseQuadratureNodes;
       const integralWeights = vehiclePoseQuadratureWeights;
       const halfTravel = travel / 2;
@@ -999,7 +1041,7 @@
 
       for (let i = 0; i < integralNodes.length; i += 1) {
         const s = halfTravel * (integralNodes[i] + 1);
-        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((slew * s) / 2) ** 2) / slew);
+        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((headingChange * s) / (2 * distance)) ** 2) / slew);
         frontX += integralWeights[i] * Math.cos(phase) * halfTravel;
         frontY += integralWeights[i] * Math.sin(phase) * halfTravel;
       }
@@ -1010,18 +1052,17 @@
         x: rearX,
         y: rearY,
         angle: bodyDelta,
-        theta: slew * travel
+        theta: headingChange
       };
     }
 
-    function sampleVehiclePose(vehicleVector, distance) {
+    function sampleVehiclePose(vehicleVector, distance, headingChangePerDistance = 0) {
       const curveLength = Math.max(0, getCurveLengthFromGeometry(getVehicleGeometry()));
-      const slew = Number(state.vehicle.sl) || 0;
       const baseX = Number(vehicleVector?.x) || 0;
       const baseY = Number(vehicleVector?.y) || 0;
-      const localPose = Math.abs(slew) < 0.001
-        ? integrateVehiclePoseFallback(vehicleVector, distance)
-        : integrateVehiclePoseFront(vehicleVector, distance);
+      const localPose = Math.abs(distance) < 1e-12 || Math.abs(headingChangePerDistance) < 1e-12
+        ? integrateVehiclePoseFallback(vehicleVector, distance, headingChangePerDistance)
+        : integrateVehiclePoseFront(vehicleVector, distance, headingChangePerDistance);
       const baseAngle = Number(vehicleVector?.angle) || 0;
       const cosBase = Math.cos(baseAngle);
       const sinBase = Math.sin(baseAngle);
@@ -1047,7 +1088,8 @@
       const copies = [];
       for (let i = 0; i < sampleCount; i += 1) {
         const t = sampleCount === 1 ? 0 : i / (sampleCount - 1);
-        const pose = sampleVehiclePoseForSlew(vehicleVector, curveLength * t, slew, curveLength, radius);
+        const distance = curveLength * t;
+        const pose = sampleVehiclePoseForSlew(vehicleVector, distance, slew, curveLength, radius);
         copies.push({
           id: `vehicle-copy-${sampleCount}-${i}`,
           x: pose.x,
@@ -1064,7 +1106,7 @@
       return copies;
     }
 
-    function sampleVehiclePoseForSlew(vehicleVector, distance, slew = 0, curveLength = 0, radius = 0) {
+    function sampleVehiclePoseForSlew(vehicleVector, distance, headingChangePerDistance = 0, curveLength = 0, radius = 0) {
       const baseX = Number(vehicleVector?.x) || 0;
       const baseY = Number(vehicleVector?.y) || 0;
       const baseAngle = Number(vehicleVector?.angle) || 0;
@@ -1073,7 +1115,7 @@
         baseY,
         baseAngle,
         Number(distance) || 0,
-        Number(slew) || 0,
+        Number(headingChangePerDistance) || 0,
         Number(curveLength) || 0,
         Number(radius) || 0
       ].join("|");
@@ -1081,9 +1123,9 @@
         return { ...poseSampleCache.get(cacheKey) };
       }
 
-      const localPose = Math.abs(slew) < 0.001
-        ? integrateVehiclePoseFallbackForSlew(slew, distance)
-        : integrateVehiclePoseFrontForSlew(slew, distance);
+      const localPose = Math.abs(distance) < 1e-12 || Math.abs(headingChangePerDistance) < 1e-12
+        ? integrateVehiclePoseFallbackForSlew(distance, headingChangePerDistance)
+        : integrateVehiclePoseFrontForSlew(distance, headingChangePerDistance);
       const cosBase = Math.cos(baseAngle);
       const sinBase = Math.sin(baseAngle);
       const result = {
@@ -1098,11 +1140,24 @@
       return { ...result };
     }
 
-    function integrateVehiclePoseFrontForSlew(slew, distance) {
+    function integrateVehiclePoseFrontForSlew(distance, headingChangePerDistance) {
+      if (Math.abs(distance) < 1e-12) {
+        return {
+          x: 0,
+          y: 0,
+          angle: 0,
+          theta: 0,
+          radius: 0,
+          curveLength: 0
+        };
+      }
+
+      const slew = headingChangePerDistance;
+      const headingChange = slew * distance;
       const invSlew = 1 / slew;
       const phase = invSlew;
       const travel = distance;
-      const phaseSpan = slew * travel;
+      const phaseSpan = headingChange;
       const harmonicLimit = Math.max(12, Math.ceil(Math.abs(invSlew) + 24));
       const besselValues = getBesselTable(slew, harmonicLimit + 1);
       let integral = { re: 0, im: 0 };
@@ -1136,13 +1191,26 @@
         x: localRear.re,
         y: localRear.im,
         angle: bodyDelta,
-        theta: slew * travel
+        theta: headingChange
       };
     }
 
-    function integrateVehiclePoseFallbackForSlew(slew, distance) {
+    function integrateVehiclePoseFallbackForSlew(distance, headingChangePerDistance) {
+      if (Math.abs(distance) < 1e-12) {
+        return {
+          x: 0,
+          y: 0,
+          angle: 0,
+          theta: 0,
+          radius: 0,
+          curveLength: 0
+        };
+      }
+
+      const slew = headingChangePerDistance;
+      const headingChange = slew * distance;
       const travel = distance;
-      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin((slew * travel) / 2) ** 2) / slew;
+      const bodyDelta = slew === 0 ? 0 : (2 * Math.sin(headingChange / 2) ** 2) / slew;
       const integralNodes = vehiclePoseQuadratureNodes;
       const integralWeights = vehiclePoseQuadratureWeights;
       const halfTravel = travel / 2;
@@ -1151,7 +1219,7 @@
 
       for (let i = 0; i < integralNodes.length; i += 1) {
         const s = halfTravel * (integralNodes[i] + 1);
-        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((slew * s) / 2) ** 2) / slew);
+        const phase = slew * s + (slew === 0 ? 0 : (2 * Math.sin((headingChange * s) / (2 * distance)) ** 2) / slew);
         frontX += integralWeights[i] * Math.cos(phase) * halfTravel;
         frontY += integralWeights[i] * Math.sin(phase) * halfTravel;
       }
@@ -1162,7 +1230,7 @@
         x: rearX,
         y: rearY,
         angle: bodyDelta,
-        theta: slew * travel
+        theta: headingChange
       };
     }
 
@@ -1984,8 +2052,7 @@
         return [vehicleToPose(anchor)].filter(Boolean);
       }
 
-      const terminalSteer = sl * totalPathLength;
-      const sweep = integrateLinearSteerPath(terminalSteer, totalPathLength);
+      const sweep = integrateLinearSteerPath(sl, totalPathLength);
       const localSamples = Array.isArray(sweep?.points) ? sweep.points.map((point, index) => {
         const t = sweep.points.length <= 1 ? 0 : index / (sweep.points.length - 1);
         return {
@@ -2083,6 +2150,14 @@
       const bisector = solution?.bisector || getSimpleArcBisectorGeometry(arc);
       const terminalPose = solution?.terminalPose || solution?.complexTerminalPose || null;
       const vc = solution?.vc || solution?.complexVc || null;
+      const displaySolution = solution ? {
+        ...solution,
+        headingChangePerDistance: Number(solution?.slew ?? solution?.sl) || 0
+      } : null;
+      if (displaySolution) {
+        delete displaySolution.slew;
+        delete displaySolution.sl;
+      }
       return {
         timestamp: new Date().toISOString(),
         inputs: {
@@ -2096,30 +2171,30 @@
           vehicle: state.vehicle ? {
             Rp: normalizeCoord(state.vehicle.Rp || {}, { label: VEHICLE_BODY_LABEL, length: 1, color: "#7dd3fc" }),
             Sp: normalizeCoord(state.vehicle.Sp || {}, { label: VEHICLE_STEER_LABEL, length: 0.25, color: "#fbbf24" }),
-            sl: Number(state.vehicle.sl) || 0
+            headingChangePerDistance: Number(state.vehicle.sl) || 0
           } : null
         },
         solver: {
-          success: Boolean(solution?.success),
-          edgeCase: Boolean(solution?.edgeCase),
-          edgeCaseReason: solution?.edgeCaseReason || null,
-          positionError: Number.isFinite(Number(solution?.positionError)) ? Number(solution.positionError) : null,
-          headingError: Number.isFinite(Number(solution?.headingError)) ? Number(solution.headingError) : null,
-          headingNormalError: Number.isFinite(Number(solution?.headingNormalError)) ? Number(solution.headingNormalError) : null,
-          terminalRadius: Number.isFinite(Number(solution?.terminalRadius)) ? Number(solution.terminalRadius) : null,
+          success: Boolean(displaySolution?.success),
+          edgeCase: Boolean(displaySolution?.edgeCase),
+          edgeCaseReason: displaySolution?.edgeCaseReason || null,
+          positionError: Number.isFinite(Number(displaySolution?.positionError)) ? Number(displaySolution.positionError) : null,
+          headingError: Number.isFinite(Number(displaySolution?.headingError)) ? Number(displaySolution.headingError) : null,
+          headingNormalError: Number.isFinite(Number(displaySolution?.headingNormalError)) ? Number(displaySolution.headingNormalError) : null,
+          terminalRadius: Number.isFinite(Number(displaySolution?.terminalRadius)) ? Number(displaySolution.terminalRadius) : null,
           vc,
           terminalPose,
           bisector,
-          passCount: Array.isArray(solution?.passes) ? solution.passes.length : 0
+          passCount: Array.isArray(displaySolution?.passes) ? displaySolution.passes.length : 0
         },
         display: {
           coordsReadout: lastPointerWorld
             ? { x: lastPointerWorld.x, y: lastPointerWorld.y }
             : { x: 0, y: 0 },
           renderStatus: renderStatus?.textContent || "",
-          debugSummary: formatComplexTerminalSummary(solution),
-          vcSummary: formatVcSummary(solution),
-          errorSummary: formatErrorSummary(solution)
+          debugSummary: formatComplexTerminalSummary(displaySolution),
+          vcSummary: formatVcSummary(displaySolution),
+          errorSummary: formatErrorSummary(displaySolution)
         }
       };
     }
@@ -2497,15 +2572,14 @@
       return best;
     }
 
-    function integrateLinearSteerPath(finalSteer, pathLength, sampleCount = Math.max(48, Math.ceil(Math.abs(Number(pathLength) || 0) * 96))) {
+    function integrateLinearSteerPath(headingChangePerDistance, pathLength, sampleCount = Math.max(48, Math.ceil(Math.abs(Number(pathLength) || 0) * 96))) {
       const count = Math.max(2, sampleCount);
       const totalPathLength = Math.max(0, Number(pathLength) || 0);
-      const slew = totalPathLength === 0 ? 0 : (Number(finalSteer) || 0) / totalPathLength;
       const points = [];
       for (let i = 0; i < count; i += 1) {
         const t = count === 1 ? 0 : i / (count - 1);
         const distance = totalPathLength * t;
-        const pose = sampleVehiclePoseForSlew({ x: 0, y: 0, angle: 0 }, distance, slew, totalPathLength, 0);
+        const pose = sampleVehiclePoseForSlew({ x: 0, y: 0, angle: 0 }, distance, Number(headingChangePerDistance) || 0, totalPathLength, 0);
         points.push({
           x: Number(pose.x) || 0,
           y: Number(pose.y) || 0,
@@ -2513,7 +2587,7 @@
           theta: Number(pose.theta) || 0
         });
       }
-      const terminalPose = sampleVehiclePoseForSlew({ x: 0, y: 0, angle: 0 }, totalPathLength, slew, totalPathLength, 0);
+      const terminalPose = sampleVehiclePoseForSlew({ x: 0, y: 0, angle: 0 }, totalPathLength, Number(headingChangePerDistance) || 0, totalPathLength, 0);
       return {
         points,
         terminalPose: {
@@ -3405,13 +3479,13 @@
       const candidate = pickPassCandidate(pass);
       const steerGuess = getFixedSteerGuess(sourceSolution);
       const pathLength = Math.max(0, Number(pass?.pathCenter ?? candidate?.pathLength) || 0);
-      const effectiveSlew = pathLength > 1e-12 ? steerGuess / pathLength : 0;
+      const totalHeadingChange = steerGuess * pathLength;
       const vehicleVector = getVehicleVector() || { x: 0, y: 0, angle: 0 };
       const sweep = integrateLinearSteerPath(steerGuess, pathLength);
       const terminalPose = sweep?.terminalPose || sampleVehiclePoseForSlew(
         vehicleVector,
         pathLength,
-        effectiveSlew,
+        steerGuess,
         pathLength,
         Number(state.radius) || 0
       );
@@ -3443,9 +3517,9 @@
         arcLength: Number(arc.arcLength) || 0,
         s: pathLength,
         slew: steerGuess,
-        sl: effectiveSlew,
-        turnAngle: steerGuess,
-        theta: steerGuess,
+        sl: steerGuess,
+        turnAngle: totalHeadingChange,
+        theta: totalHeadingChange,
         finalHeading: Number.isFinite(Number(terminalPose?.angle)) ? Number(terminalPose.angle) : 0,
         curveLength: pathLength,
         complexCurveLength: pathLength,
@@ -3473,7 +3547,7 @@
           radius: terminalRadius,
           startAngle: 0,
           endAngle: 0,
-          turnAngle: finalSteer,
+          turnAngle: totalHeadingChange,
           arcLength: pathLength,
           pathPoints,
           terminalPose: terminalPose ? {
@@ -3510,7 +3584,7 @@
       const steerSeed = getFixedSteerGuess(solution);
       const lines = [
         `Selected pass: ${formatPassIndex(Number(passes[selectedPassIndex]?.pass ?? selectedPassIndex + 1))}`,
-        "#  pass  steerGuess  pathGuess   posErr    headErr    terminal pose"
+        "#  pass  headingRate  pathGuess   posErr    headErr    terminal pose"
       ];
       passes.forEach((pass, index) => {
         const candidate = pickPassCandidate(pass);
@@ -4286,6 +4360,25 @@
       });
     }
 
+    if (swtdInput) {
+      swtdInput.addEventListener("input", () => {
+        state.ui.swtd = normalizeSwtdValue(swtdInput.value);
+        swtdInput.value = formatRadiusValue(state.ui.swtd);
+        saveState();
+      });
+
+      swtdInput.addEventListener("blur", () => {
+        state.ui.swtd = normalizeSwtdValue(state.ui.swtd);
+        swtdInput.value = formatRadiusValue(state.ui.swtd);
+        saveState();
+      });
+
+      swtdInput.addEventListener("focus", () => {
+        swtdInput.value = formatRadiusValue(state.ui.swtd);
+        swtdInput.select();
+      });
+    }
+
     window.addEventListener("keydown", (event) => {
       if ((event.key === "Delete" || event.key === "Backspace") && state.selectedId) {
         const selected = state.vectors.find(v => v.id === state.selectedId) || null;
@@ -4461,6 +4554,10 @@
       state.Vehicles[0] = createAnchorVehicle(getSolverInitialSl(state.simpleArcSolution));
       enforceVectorAnchor();
       state.ui.vehicle = true;
+      state.ui.swtd = normalizeSwtdValue(state.ui.swtd);
+      if (swtdInput) {
+        swtdInput.value = formatRadiusValue(state.ui.swtd);
+      }
       state.arc.deltaPsi = normalizeDeltaPsi(getSimpleArcDeltaPsi());
       state.arc.angle = state.arc.deltaPsi;
       state.arc.length = getSimpleArcLength();

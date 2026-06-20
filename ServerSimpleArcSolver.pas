@@ -252,23 +252,26 @@ end;
 function IntegrateLinearSteerPath(const FinalSteer, PathLength: Double): TLinearSteerPath;
 var
   Count, I: Integer;
-  T, Distance, Slew: Double;
+  T, Distance, HeadingChangePerDistance: Double;
   Pose: TVehiclePose;
 begin
   Count := Max(2, Ceil(48 + Abs(PathLength) * 96));
-  Slew := IfThen(PathLength = 0, 0, FinalSteer / PathLength);
   SetLength(Result.Points, Count);
+  if Abs(PathLength) < 1e-12 then
+    HeadingChangePerDistance := 0
+  else
+    HeadingChangePerDistance := FinalSteer / PathLength;
   for I := 0 to Count - 1 do
   begin
     T := IfThen(Count = 1, 0, I / (Count - 1));
     Distance := PathLength * T;
-    Pose := SampleVehiclePoseForSlew(0, 0, 0, Distance, Slew, PathLength, 0);
+    Pose := SampleVehiclePoseForSlew(0, 0, 0, Distance, HeadingChangePerDistance, PathLength, 0);
     Result.Points[I].X := Pose.X;
     Result.Points[I].Y := Pose.Y;
     Result.Points[I].Heading := Pose.Angle;
     Result.Points[I].Theta := Pose.Theta;
   end;
-  Result.TerminalPose := SampleVehiclePoseForSlew(0, 0, 0, PathLength, Slew, PathLength, 0);
+  Result.TerminalPose := SampleVehiclePoseForSlew(0, 0, 0, PathLength, HeadingChangePerDistance, PathLength, 0);
 end;
 
 function GetSimpleArcVC(const TerminalPose: TVehiclePose): TServerPoint2D;
