@@ -748,9 +748,7 @@
       radiusIndex: 0,
       radiusValue: SEED_LOOKUP_FIXED_RADIUS,
       steerMaxDegrees: SEED_LOOKUP_STEER_MAX_DEGREES,
-      entries: new Map(),
-      starterSeeds: [],
-      starterSeedGrid: []
+      entries: new Map()
     };
 
     const state = loadState() ?? createDefaultState();
@@ -3866,7 +3864,6 @@
         pExitCode: pass?.exitCode ?? solution?.exitCode ?? null
       };
       seedLookupState.entries.set(getSeedLookupCellKey(radiusIndex, seedLookupState.stepIndex, seedLookupState.rawPsiDegrees), entry);
-      refreshStarterSeedArray();
       return entry;
     }
 
@@ -3886,303 +3883,7 @@
       return nearest;
     }
 
-    function getSeedLookupEntriesSorted() {
-      return Array.from(seedLookupState.entries.values())
-        .filter((entry) => Number.isFinite(Number(entry?.stepIndex)) && Number.isFinite(Number(entry?.radiusIndex)))
-        .sort((left, right) => (Number(left.radiusIndex) - Number(right.radiusIndex)) || (Number(left.stepIndex) - Number(right.stepIndex)));
-    }
-
-    function getSeedLookupEntriesForRadiusIndex(radiusIndex) {
-      return getSeedLookupEntriesSorted().filter((entry) => Number(entry.radiusIndex) === Number(radiusIndex));
-    }
-
-    function isStableSeedLookupEntry(entry) {
-      return Number(entry?.pExitCode) === 3 && Number(entry?.aExitCode) === 0;
-    }
-
-    function fitRawPsiTrendSeed(entries, targetRawPsiDegrees, key) {
-      const points = entries
-        .map((entry) => ({
-          x: Number(entry?.rawPsiDegrees),
-          y: Number(entry?.[key])
-        }))
-        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-
-      if (!points.length) {
-        return NaN;
-      }
-      if (points.length === 1) {
-        return points[0].y;
-      }
-
-      let sumX = 0;
-      let sumY = 0;
-      let sumXX = 0;
-      let sumXY = 0;
-      points.forEach((point) => {
-        sumX += point.x;
-        sumY += point.y;
-        sumXX += point.x * point.x;
-        sumXY += point.x * point.y;
-      });
-      const count = points.length;
-      const denominator = (count * sumXX) - (sumX * sumX);
-      if (Math.abs(denominator) > 1e-12) {
-        const slope = ((count * sumXY) - (sumX * sumY)) / denominator;
-        const intercept = (sumY - (slope * sumX)) / count;
-        const estimated = intercept + (slope * targetRawPsiDegrees);
-        return Number.isFinite(estimated) ? estimated : points[points.length - 1].y;
-      }
-
-      const first = points[0];
-      const last = points[points.length - 1];
-      const deltaX = last.x - first.x;
-      if (Math.abs(deltaX) > 1e-12) {
-        const estimated = last.y + (((last.y - first.y) / deltaX) * (targetRawPsiDegrees - last.x));
-        return Number.isFinite(estimated) ? estimated : last.y;
-      }
-      return last.y;
-    }
-
-    function estimateSeedLookupEntryForStep(stepIndex, rawPsiDegrees) {
-      const fallback = {
-        swtd: SEED_LOOKUP_BOOTSTRAP_ENTRY.swtd,
-        desStrAng: SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng
-      };
-      const numericStepIndex = Math.max(0, Math.trunc(Number(stepIndex) || 0));
-      const targetRawPsiDegrees = Number.isFinite(Number(rawPsiDegrees))
-        ? Number(rawPsiDegrees)
-        : Number(SEED_LOOKUP_RAW_PSI_AXIS[numericStepIndex] ?? SEED_LOOKUP_BOOTSTRAP_ENTRY.rawPsiDegrees);
-      const activeRadiusIndex = Number.isFinite(Number(seedLookupState.radiusIndex))
-        ? Number(seedLookupState.radiusIndex)
-        : getSeedLookupRadiusIndex(SEED_LOOKUP_FIXED_RADIUS);
-      const priorEntries = getSeedLookupEntriesForRadiusIndex(activeRadiusIndex)
-        .filter((entry) => Number(entry.stepIndex) < numericStepIndex);
-      const stableEntries = priorEntries.filter(isStableSeedLookupEntry);
-      const history = (stableEntries.length >= 2 ? stableEntries : priorEntries)
-        .filter((entry) => Number.isFinite(Number(entry?.rawPsiDegrees)) && Number.isFinite(Number(entry?.swtd)) && Number.isFinite(Number(entry?.desStrAng)));
-      const recentHistory = history.slice(-4);
-
-      if (recentHistory.length >= 2) {
-        const predictedSwtd = fitRawPsiTrendSeed(recentHistory, targetRawPsiDegrees, "swtd");
-        const predictedDesStrAng = fitRawPsiTrendSeed(recentHistory, targetRawPsiDegrees, "desStrAng");
-        if (Number.isFinite(predictedSwtd) && Number.isFinite(predictedDesStrAng)) {
-          return {
-            swtd: limitSwtdMinimum(predictedSwtd),
-            desStrAng: boundDesStrAngSeed(predictedDesStrAng, degToRad(SEED_LOOKUP_STEER_MAX_DEGREES))
-          };
-        }
-      }
-
-      if (!recentHistory.length) {
-        return getPriorProfileStarterSeed(
-          targetRawPsiDegrees,
-          SEED_LOOKUP_BOOTSTRAP_ENTRY,
-          SEED_SWEEP_RADIUS_AXIS[activeRadiusIndex] ?? SEED_LOOKUP_FIXED_RADIUS
-        );
-      }
-
-      if (recentHistory.length === 1) {
-        const only = recentHistory[0];
-        return {
-          swtd: limitSwtdMinimum(Number(only.swtd)),
-          desStrAng: boundDesStrAngSeed(Number(only.desStrAng), degToRad(SEED_LOOKUP_STEER_MAX_DEGREES))
-        };
-      }
-
-      return {
-        swtd: limitSwtdMinimum(fallback.swtd),
-        desStrAng: boundDesStrAngSeed(fallback.desStrAng, degToRad(SEED_LOOKUP_STEER_MAX_DEGREES))
-      };
-    }
-
-    function getStarterSeedHistoryEntries(stepIndex) {
-      const entries = getSeedLookupEntriesSorted();
-      return entries.filter((entry) => Number(entry.stepIndex) < stepIndex);
-    }
-
-    function clampStarterSeedValues(seed, previousSeed, steerMaxRad = degToRad(SEED_LOOKUP_STEER_MAX_DEGREES)) {
-      const priorSwtd = Number(previousSeed?.swtd);
-      const priorDesStrAng = Number(previousSeed?.desStrAng);
-      const targetSwtd = Number(seed?.swtd);
-      const targetDesStrAng = Number(seed?.desStrAng);
-      const swtdFloor = Number.isFinite(priorSwtd) && priorSwtd > 0 ? priorSwtd * 0.7 : SWTD_MIN;
-      const swtdCeil = Number.isFinite(priorSwtd) && priorSwtd > 0 ? priorSwtd * 1.4 : Number.MAX_SAFE_INTEGER;
-      const desStrAngDelta = Number.isFinite(priorDesStrAng)
-        ? Math.max(degToRad(5), Math.abs(priorDesStrAng) * 0.25)
-        : Number.MAX_SAFE_INTEGER;
-      const swtd = Number.isFinite(targetSwtd) ? limitSwtdMinimum(clamp(targetSwtd, swtdFloor, swtdCeil)) : limitSwtdMinimum(priorSwtd);
-      const boundedDesStrAng = Number.isFinite(targetDesStrAng)
-        ? clamp(targetDesStrAng, Number.isFinite(priorDesStrAng) ? priorDesStrAng - desStrAngDelta : -steerMaxRad, Number.isFinite(priorDesStrAng) ? priorDesStrAng + desStrAngDelta : steerMaxRad)
-        : priorDesStrAng;
-      return {
-        ...(seed && typeof seed === "object" ? seed : null),
-        swtd,
-        desStrAng: boundDesStrAngSeed(Number.isFinite(boundedDesStrAng) ? boundedDesStrAng : SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng, steerMaxRad)
-      };
-    }
-
-    function getPriorProfileStarterSeed(rawPsiDegrees, previousSeed = SEED_LOOKUP_BOOTSTRAP_ENTRY, radiusValue = SEED_LOOKUP_FIXED_RADIUS) {
-      const spanDegrees = Math.max(1e-9, SEED_LOOKUP_RAW_PSI_MAX_DEGREES - SEED_LOOKUP_RAW_PSI_MIN_DEGREES);
-      const normalized = clamp((SEED_LOOKUP_RAW_PSI_MAX_DEGREES - Number(rawPsiDegrees)) / spanDegrees, 0, 1);
-      const eased = normalized * normalized * (3 - (2 * normalized));
-      const radiusMagnitude = Math.max(SWTD_MIN, Math.abs(Number(radiusValue) || 0));
-      const radiusScale = clamp(Math.pow(radiusMagnitude / SEED_LOOKUP_FIXED_RADIUS, 0.35), 0.5, 3);
-      const desScale = clamp(0.92 + ((radiusScale - 1) * 0.06), 0.84, 1.08);
-      const swtdTerminal = SEED_LOOKUP_BOOTSTRAP_ENTRY.swtd * 0.93 * radiusScale;
-      const desStrAngTerminal = SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng * desScale;
-      return clampStarterSeedValues(
-        {
-          kind: "swtd",
-          swtd: SEED_LOOKUP_BOOTSTRAP_ENTRY.swtd + ((swtdTerminal - SEED_LOOKUP_BOOTSTRAP_ENTRY.swtd) * eased),
-          desStrAng: SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng + ((desStrAngTerminal - SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng) * eased)
-        },
-        previousSeed,
-        degToRad(SEED_LOOKUP_STEER_MAX_DEGREES)
-      );
-    }
-
-    function blendStarterSeedPredictions(predictions, fallbackSeed, previousSeed, steerMaxRad) {
-      const usable = predictions.filter((prediction) => prediction && Number.isFinite(Number(prediction.value)));
-      if (!usable.length) {
-        return clampStarterSeedValues(fallbackSeed, previousSeed, steerMaxRad);
-      }
-      let weightedSum = 0;
-      let weightSum = 0;
-      usable.forEach((prediction) => {
-        const weight = Math.max(0, Number(prediction.weight) || 0);
-        if (!weight) return;
-        weightedSum += Number(prediction.value) * weight;
-        weightSum += weight;
-      });
-      const blended = weightSum > 0 ? weightedSum / weightSum : usable[0].value;
-      return clampStarterSeedValues({ ...fallbackSeed, [fallbackSeed.kind]: blended }, previousSeed, steerMaxRad);
-    }
-
-    function buildStarterSeedEntry(stepIndex, rawPsiDegrees, radiusValue, radiusIndex, historyEntries, previousSeed) {
-      const fixedRadiusIndex = getSeedLookupRadiusIndex(SEED_LOOKUP_FIXED_RADIUS);
-      if (radiusIndex === fixedRadiusIndex && Math.abs(Number(rawPsiDegrees) - SEED_LOOKUP_BOOTSTRAP_ENTRY.rawPsiDegrees) < 1e-12) {
-        return {
-          stepIndex,
-          radiusIndex,
-          radius: Number(radiusValue) || SEED_LOOKUP_FIXED_RADIUS,
-          radiusAxisValue: Number(radiusValue) || SEED_LOOKUP_FIXED_RADIUS,
-          rawPsiDegrees: SEED_LOOKUP_BOOTSTRAP_ENTRY.rawPsiDegrees,
-          swtd: SEED_LOOKUP_BOOTSTRAP_ENTRY.swtd,
-          desStrAng: SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng,
-          source: "bootstrap",
-          confidence: 1,
-          historyCount: Array.isArray(historyEntries) ? historyEntries.length : 0
-        };
-      }
-
-      const priorHistory = Array.isArray(historyEntries) ? historyEntries : [];
-      const stableHistory = priorHistory.filter(isStableSeedLookupEntry);
-      const trendHistory = (stableHistory.length >= 2 ? stableHistory : priorHistory)
-        .filter((entry) => Number.isFinite(Number(entry?.rawPsiDegrees)) && Number.isFinite(Number(entry?.swtd)) && Number.isFinite(Number(entry?.desStrAng)));
-      const recentTrendHistory = trendHistory.slice(-4);
-      const steerMaxRad = degToRad(SEED_LOOKUP_STEER_MAX_DEGREES);
-      const fallbackSeed = {
-        kind: "swtd",
-        swtd: Number(previousSeed?.swtd) || SEED_LOOKUP_BOOTSTRAP_ENTRY.swtd,
-        desStrAng: Number(previousSeed?.desStrAng) || SEED_LOOKUP_BOOTSTRAP_ENTRY.desStrAng
-      };
-
-      if (!trendHistory.length) {
-        return {
-          ...getPriorProfileStarterSeed(rawPsiDegrees, previousSeed, radiusValue),
-          stepIndex,
-          radiusIndex,
-          radius: Number(radiusValue) || SEED_LOOKUP_FIXED_RADIUS,
-          radiusAxisValue: Number(radiusValue) || SEED_LOOKUP_FIXED_RADIUS,
-          rawPsiDegrees,
-          source: "prior-profile",
-          confidence: 0.45,
-          historyCount: 0
-        };
-      }
-
-      const localSwtd = recentTrendHistory.length >= 2
-        ? fitRawPsiTrendSeed(recentTrendHistory, rawPsiDegrees, "swtd")
-        : NaN;
-      const localDesStrAng = recentTrendHistory.length >= 2
-        ? fitRawPsiTrendSeed(recentTrendHistory, rawPsiDegrees, "desStrAng")
-        : NaN;
-      const globalSwtd = trendHistory.length >= 2
-        ? fitRawPsiTrendSeed(trendHistory, rawPsiDegrees, "swtd")
-        : NaN;
-      const globalDesStrAng = trendHistory.length >= 2
-        ? fitRawPsiTrendSeed(trendHistory, rawPsiDegrees, "desStrAng")
-        : NaN;
-      const carrySwtd = Number(previousSeed?.swtd);
-      const carryDesStrAng = Number(previousSeed?.desStrAng);
-      const localWeight = recentTrendHistory.length >= 3 ? 0.55 : 0.4;
-      const globalWeight = trendHistory.length >= 4 ? 0.2 : 0.1;
-      const carryWeight = 1 - localWeight - globalWeight;
-      const swtdPrediction = blendStarterSeedPredictions([
-        { value: localSwtd, weight: localWeight },
-        { value: globalSwtd, weight: globalWeight },
-        { value: carrySwtd, weight: carryWeight }
-      ], { ...fallbackSeed, kind: "swtd" }, previousSeed, steerMaxRad);
-      const desStrAngPrediction = blendStarterSeedPredictions([
-        { value: localDesStrAng, weight: localWeight },
-        { value: globalDesStrAng, weight: globalWeight },
-        { value: carryDesStrAng, weight: carryWeight }
-      ], { ...fallbackSeed, kind: "desStrAng" }, previousSeed, steerMaxRad);
-      const confidence = clamp(
-        0.35
-          + (recentTrendHistory.length * 0.12)
-          + (stableHistory.length * 0.04),
-        0.35,
-        0.96
-      );
-
-      return {
-        stepIndex,
-        radiusIndex,
-        radius: Number(radiusValue) || SEED_LOOKUP_FIXED_RADIUS,
-        radiusAxisValue: Number(radiusValue) || SEED_LOOKUP_FIXED_RADIUS,
-        rawPsiDegrees,
-        swtd: swtdPrediction.swtd,
-        desStrAng: desStrAngPrediction.desStrAng,
-        source: recentTrendHistory.length >= 2
-          ? (stableHistory.length >= 2 ? "stable-hybrid" : "hybrid")
-          : "carry-forward",
-        confidence,
-        historyCount: trendHistory.length
-      };
-    }
-
-    function buildStarterSeedGrid(historyEntries = getSeedLookupEntriesSorted()) {
-      const starterSeedGrid = [];
-      const normalizedHistory = Array.isArray(historyEntries)
-        ? historyEntries.filter((entry) => Number.isFinite(Number(entry?.stepIndex)) && Number.isFinite(Number(entry?.rawPsiDegrees)) && Number.isFinite(Number(entry?.radiusIndex)))
-        : [];
-      for (let radiusIndex = 0; radiusIndex < SEED_SWEEP_RADIUS_AXIS.length; radiusIndex += 1) {
-        const radiusValue = SEED_SWEEP_RADIUS_AXIS[radiusIndex];
-        const radiusHistory = normalizedHistory.filter((entry) => Number(entry.radiusIndex) === radiusIndex);
-        const starterSeeds = [];
-        let previousSeed = null;
-        for (let index = 0; index < SEED_LOOKUP_RAW_PSI_AXIS.length; index += 1) {
-          const rawPsiDegrees = SEED_LOOKUP_RAW_PSI_AXIS[index];
-          const historyForStep = radiusHistory.filter((entry) => Number(entry.stepIndex) < index);
-          const starterSeed = buildStarterSeedEntry(
-            index,
-            rawPsiDegrees,
-            radiusValue,
-            radiusIndex,
-            historyForStep,
-            previousSeed || getPriorProfileStarterSeed(rawPsiDegrees, SEED_LOOKUP_BOOTSTRAP_ENTRY, radiusValue)
-          );
-          starterSeeds.push(starterSeed);
-          previousSeed = starterSeed;
-        }
-        starterSeedGrid.push(starterSeeds);
-      }
-      return starterSeedGrid;
-    }
-
-    function normalizeStarterSeedCell(cell) {
+    function normalizeSeedResponseCell(cell) {
       if (!cell || typeof cell !== "object") {
         return null;
       }
@@ -4199,137 +3900,33 @@
       };
     }
 
-    function normalizeStarterSeedGrid(grid) {
-      if (!Array.isArray(grid)) {
-        return null;
-      }
-      return grid.map((row) => Array.isArray(row) ? row.map(normalizeStarterSeedCell).filter(Boolean) : []);
-    }
-
-    function loadStarterSeedGridFromServer() {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open("GET", "/api/starter-seeds", false);
-        xhr.send(null);
-        if (xhr.status < 200 || xhr.status >= 300) {
-          return null;
-        }
-        const payload = JSON.parse(xhr.responseText || "{}");
-        return normalizeStarterSeedGrid(payload?.starterSeedGrid);
-      } catch {
-        return null;
-      }
-    }
-
-    function refreshStarterSeedArray() {
-      const useLocalRefinement = seedLookupState.entries.size > 0;
-      seedLookupState.starterSeedGrid = useLocalRefinement
-        ? buildStarterSeedGrid()
-        : (loadStarterSeedGridFromServer() || buildStarterSeedGrid());
-      const fixedRadiusIndex = getSeedLookupRadiusIndex(SEED_LOOKUP_FIXED_RADIUS);
-      seedLookupState.radiusIndex = fixedRadiusIndex;
-      seedLookupState.radiusValue = SEED_SWEEP_RADIUS_AXIS[fixedRadiusIndex] ?? SEED_LOOKUP_FIXED_RADIUS;
-      seedLookupState.starterSeeds = seedLookupState.starterSeedGrid[fixedRadiusIndex] || [];
-      return seedLookupState.starterSeeds;
-    }
-
-    function getStarterSeedGridCell(radiusIndex, stepIndex) {
-      return seedLookupState.starterSeedGrid?.[radiusIndex]?.[stepIndex] || null;
-    }
-
-    function interpolateSeedValues(c00, c10, c01, c11, radiusMix, psiMix, key) {
-      const v00 = Number(c00?.[key]);
-      const v10 = Number(c10?.[key]);
-      const v01 = Number(c01?.[key]);
-      const v11 = Number(c11?.[key]);
-      if ([v00, v10, v01, v11].every(Number.isFinite)) {
-        return ((1 - radiusMix) * (1 - psiMix) * v00)
-          + (radiusMix * (1 - psiMix) * v10)
-          + ((1 - radiusMix) * psiMix * v01)
-          + (radiusMix * psiMix * v11);
-      }
-      const available = [
-        { value: v00, weight: (1 - radiusMix) * (1 - psiMix), seed: c00 },
-        { value: v10, weight: radiusMix * (1 - psiMix), seed: c10 },
-        { value: v01, weight: (1 - radiusMix) * psiMix, seed: c01 },
-        { value: v11, weight: radiusMix * psiMix, seed: c11 }
-      ].filter((item) => Number.isFinite(item.value) && item.weight > 0);
-      if (!available.length) {
-        return NaN;
-      }
-      let weightedSum = 0;
-      let weightSum = 0;
-      available.forEach((item) => {
-        weightedSum += item.value * item.weight;
-        weightSum += item.weight;
-      });
-      return weightSum > 0 ? weightedSum / weightSum : available[0].value;
-    }
-
-    function getStarterSeedForRequest(radius, rawPsiDegrees, steerMaxDegrees = SEED_LOOKUP_STEER_MAX_DEGREES) {
-      if (!seedLookupState.starterSeedGrid.length) {
-        refreshStarterSeedArray();
-      }
+    function requestSeedFromDelphi(radius, rawPsiDegrees, steerMaxDegrees = SEED_LOOKUP_STEER_MAX_DEGREES) {
       const radiusValue = Math.abs(Number(radius) || 0) || SEED_LOOKUP_FIXED_RADIUS;
       const rawPsiValue = Number.isFinite(Number(rawPsiDegrees))
         ? Number(rawPsiDegrees)
         : seedLookupState.rawPsiDegrees;
-      const radiusBounds = getBoundingAxisIndices(SEED_SWEEP_RADIUS_AXIS, radiusValue);
-      const psiBounds = getBoundingAxisIndices(SEED_LOOKUP_RAW_PSI_AXIS, rawPsiValue);
-      const c00 = getStarterSeedGridCell(radiusBounds.lowerIndex, psiBounds.lowerIndex);
-      const c10 = getStarterSeedGridCell(radiusBounds.upperIndex, psiBounds.lowerIndex);
-      const c01 = getStarterSeedGridCell(radiusBounds.lowerIndex, psiBounds.upperIndex);
-      const c11 = getStarterSeedGridCell(radiusBounds.upperIndex, psiBounds.upperIndex);
-      const exactRadius = radiusBounds.lowerIndex === radiusBounds.upperIndex;
-      const exactPsi = psiBounds.lowerIndex === psiBounds.upperIndex;
-      const steerMaxRad = degToRad(steerMaxDegrees);
-      const previousSeed = c00 || c10 || c01 || c11 || SEED_LOOKUP_BOOTSTRAP_ENTRY;
-
-      if (exactRadius && exactPsi && c00) {
-        return clampStarterSeedValues(
-          {
-            ...c00,
+      const params = new URLSearchParams({
+        radius: String(radiusValue),
+        rawPsiDegrees: String(rawPsiValue),
+        steerMaxDegrees: String(steerMaxDegrees)
+      });
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", `/api/starter-seeds?${params.toString()}`, false);
+      xhr.send(null);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const payload = JSON.parse(xhr.responseText || "{}");
+        const seed = normalizeSeedResponseCell(payload?.starterSeed);
+        if (seed) {
+          return {
+            ...seed,
             radius: radiusValue,
             rawPsiDegrees: rawPsiValue,
-            source: c00.source || "grid-exact",
-            confidence: Number.isFinite(Number(c00.confidence)) ? Number(c00.confidence) : 1
-          },
-          previousSeed,
-          steerMaxRad
-        );
+            source: seed.source || "server-starter-seed",
+            confidence: Number.isFinite(Number(seed.confidence)) ? Number(seed.confidence) : 1
+          };
+        }
       }
-
-      const interpolatedSwtd = interpolateSeedValues(c00, c10, c01, c11, radiusBounds.mix, psiBounds.mix, "swtd");
-      const interpolatedDesStrAng = interpolateSeedValues(c00, c10, c01, c11, radiusBounds.mix, psiBounds.mix, "desStrAng");
-      if (Number.isFinite(interpolatedSwtd) && Number.isFinite(interpolatedDesStrAng)) {
-        return clampStarterSeedValues(
-          {
-            kind: "swtd",
-            swtd: interpolatedSwtd,
-            desStrAng: interpolatedDesStrAng,
-            radius: radiusValue,
-            rawPsiDegrees: rawPsiValue,
-            stepIndex: psiBounds.lowerIndex,
-            source: "grid-bilinear",
-            confidence: 0.8
-          },
-          previousSeed,
-          steerMaxRad
-        );
-      }
-
-      const fallbackSeed = getPriorProfileStarterSeed(rawPsiValue, previousSeed, radiusValue);
-      return clampStarterSeedValues(
-        {
-          ...fallbackSeed,
-          radius: radiusValue,
-          rawPsiDegrees: rawPsiValue,
-          source: "grid-fallback",
-          confidence: 0.35
-        },
-        previousSeed,
-        steerMaxRad
-      );
+      throw new Error("starter-seeds lookup failed");
     }
 
     function hasNextSeedLookupRawPsiEntry() {
@@ -4757,11 +4354,12 @@
         return false;
       }
       storeCurrentSeedLookupEntry(simpleArcFullSolution || state.simpleArcTrace || state.simpleArcSolution);
-      refreshStarterSeedArray();
       const nextStepIndex = seedLookupState.stepIndex + 1;
       const nextRawPsiDegrees = SEED_LOOKUP_RAW_PSI_AXIS[nextStepIndex];
-      const seedEntry = seedLookupState.starterSeeds[nextStepIndex]
-        ?? estimateSeedLookupEntryForStep(nextStepIndex, nextRawPsiDegrees);
+      const seedEntry = requestSeedFromDelphi(SEED_LOOKUP_FIXED_RADIUS, nextRawPsiDegrees, SEED_LOOKUP_STEER_MAX_DEGREES);
+      if (!seedEntry) {
+        return false;
+      }
       const seedSwtd = limitSwtdMinimum(Number(seedEntry.swtd) * SEED_LOOKUP_INITIAL_SWTD_MULTIPLIER);
       const seedDesStrAng = boundDesStrAngSeed(Number(seedEntry.desStrAng), degToRad(SEED_LOOKUP_STEER_MAX_DEGREES));
       seedLookupState.stepIndex = nextStepIndex;
@@ -5744,7 +5342,6 @@
       const seededSlew = deriveHeadingRateFromDesStrAng(state.arc.desStrAng, state.ui.swtd);
       state.arc.slew = Number.isFinite(seededSlew) ? seededSlew : getInitialHrtSeed(undefined, state.ui.swtd);
       state.arc.length = getSimpleArcLength();
-      refreshStarterSeedArray();
     }
 
     window.SplineLabSeedSweep = {
@@ -5753,8 +5350,8 @@
       rawPsiAxis: SEED_SWEEP_RAW_PSI_AXIS.slice(),
       steerMaxDegrees: SEED_SWEEP_STEER_MAX_DEGREES,
       totalEntries: SEED_SWEEP_TOTAL_ENTRIES,
-      getStarterSeedForRequest: (radius, rawPsiDegrees, steerMaxDegrees) => getStarterSeedForRequest(radius, rawPsiDegrees, steerMaxDegrees),
-      solveStarterSeedRequest: (request = {}) => {
+      requestSeedFromDelphi: (radius, rawPsiDegrees, steerMaxDegrees) => requestSeedFromDelphi(radius, rawPsiDegrees, steerMaxDegrees),
+      solveSeedRequest: (request = {}) => {
         const radius = Number.isFinite(Number(request.radius)) ? Number(request.radius) : SEED_LOOKUP_FIXED_RADIUS;
         const rawPsiDegrees = Number.isFinite(Number(request.rawPsiDegrees)) ? Number(request.rawPsiDegrees) : SEED_LOOKUP_RAW_PSI_MIN_DEGREES;
         const steerMaxDegrees = Number.isFinite(Number(request.steerMaxDegrees))
@@ -5787,13 +5384,13 @@
         const steerMaxDegrees = Number.isFinite(Number(entry.steerMaxDegrees))
           ? Number(entry.steerMaxDegrees)
           : SEED_SWEEP_STEER_MAX_DEGREES;
-        const starterSeed = getStarterSeedForRequest(radius, rawPsiDegrees, steerMaxDegrees);
+        const seedResponse = requestSeedFromDelphi(radius, rawPsiDegrees, steerMaxDegrees);
         const deltaPsi = degToRad(Number.isFinite(rawPsiDegrees) ? rawPsiDegrees : SEED_LOOKUP_RAW_PSI_MIN_DEGREES);
         const seedSwtd = limitSwtdMinimum(Number.isFinite(Number(entry.seedSwtd))
           ? Number(entry.seedSwtd)
           : (Number.isFinite(Number(entry.swtd))
             ? Number(entry.swtd)
-            : Number(starterSeed.swtd)));
+            : Number(seedResponse.swtd)));
         const fallbackArc = {
           radius: Number.isFinite(radius) ? radius : SEED_LOOKUP_FIXED_RADIUS,
           deltaPsi,
@@ -5805,7 +5402,7 @@
           ? Number(entry.seedDesStrAng)
           : (Number.isFinite(Number(entry.desStrAng))
             ? Number(entry.desStrAng)
-            : Number(starterSeed.desStrAng));
+            : Number(seedResponse.desStrAng));
         const seedDesStrAng = boundDesStrAngSeed(seedDesStrAngInput, degToRad(steerMaxDegrees));
         const seedSlewDerived = deriveHeadingRateFromDesStrAng(seedDesStrAng, seedSwtd);
         const seedSlew = Number.isFinite(seedSlewDerived)
@@ -6282,7 +5879,6 @@
       state.Vehicles[0] = createAnchorVehicle(getSolverInitialSl(state.simpleArcSolution));
       state.ui.vehicle = true;
       refreshDerivedSelectorState();
-      refreshStarterSeedArray();
       if (SEED_LOOKUP_BOOTSTRAP_MODE) {
         arcRadiusInput.disabled = true;
         arcAngleInput.disabled = true;

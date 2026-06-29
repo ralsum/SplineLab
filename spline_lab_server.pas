@@ -335,12 +335,13 @@ end;
 
 function BuildStarterSeedRefinementCandidates(
   const BaseSeed: TStarterSeedCell;
-  const Solution: TServerSimpleArcSolution
+  const Solution: TServerSimpleArcSolution;
+  const Level: Integer
 ): TStarterSeedRow;
 var
   FinalPass: TTracePass;
   CenterSeed, Candidate: TStarterSeedCell;
-  SwtdCenter, SwtdStep, DesCenter, DesStep: Double;
+  SwtdCenter, SwtdStep, DesCenter, DesStep, StepScale: Double;
   Count: Integer;
   PositiveP, PositiveH: Boolean;
 
@@ -363,6 +364,7 @@ begin
   SetLength(Result, 0);
   Count := 0;
   FinalPass := GetFinalTracePass(Solution);
+  StepScale := Power(0.5, Max(0, Level));
   if IsFiniteDouble(FinalPass.Swtd) then
     SwtdCenter := Max(1e-6, FinalPass.Swtd)
   else
@@ -371,8 +373,8 @@ begin
     DesCenter := FinalPass.DesiredSteerAngle
   else
     DesCenter := BaseSeed.DesStrAng;
-  SwtdStep := Max(SwtdCenter * 0.005, 1e-6);
-  DesStep := Max(Pi / 720, Abs(DesCenter) * 0.005);
+  SwtdStep := Max(SwtdCenter * (0.02 * StepScale), 1e-6);
+  DesStep := Max((Pi / 360) * StepScale, Min(Pi / 8, Abs(DesCenter) * 0.05 * StepScale));
   PositiveP := FinalPass.PErr >= 0;
   PositiveH := FinalPass.HErr >= 0;
 
@@ -431,6 +433,32 @@ begin
     Candidate.DesStrAng := ClampDouble(DesCenter - DesStep, 0, Pi / 2);
   Candidate.Source := 'starter-refine-diagonal-b';
   Candidate.Confidence := 0.945;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  if not PositiveP then
+    Candidate.Swtd := Max(1e-6, SwtdCenter - (SwtdStep * 2))
+  else
+    Candidate.Swtd := SwtdCenter + (SwtdStep * 2);
+  if not PositiveH then
+    Candidate.DesStrAng := ClampDouble(DesCenter - (DesStep * 2), 0, Pi / 2)
+  else
+    Candidate.DesStrAng := ClampDouble(DesCenter + (DesStep * 2), 0, Pi / 2);
+  Candidate.Source := 'starter-refine-expanded-a';
+  Candidate.Confidence := 0.94;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  if not PositiveP then
+    Candidate.Swtd := SwtdCenter + (SwtdStep * 2)
+  else
+    Candidate.Swtd := Max(1e-6, SwtdCenter - (SwtdStep * 2));
+  if not PositiveH then
+    Candidate.DesStrAng := ClampDouble(DesCenter + (DesStep * 2), 0, Pi / 2)
+  else
+    Candidate.DesStrAng := ClampDouble(DesCenter - (DesStep * 2), 0, Pi / 2);
+  Candidate.Source := 'starter-refine-expanded-b';
+  Candidate.Confidence := 0.935;
   AppendUniqueCandidate(Candidate);
 end;
 
@@ -600,6 +628,14 @@ var
   CandidateSolution: TServerSimpleArcSolution;
   BestScore, CandidateScore: Double;
   Passed: Boolean;
+  RefinementLevel, MaxRefinementLevels: Integer;
+  NewtonLevel: Integer;
+  CurrentSeed: TStarterSeedCell;
+  CurrentSolution: TServerSimpleArcSolution;
+  CenterPass, PlusSwtdPass, MinusSwtdPass, PlusDesPass, MinusDesPass: TTracePass;
+  SwtdStep, DesStep, Jacobian11, Jacobian12, Jacobian21, Jacobian22, Determinant: Double;
+  DeltaSwtd, DeltaDes, Alpha: Double;
+  DampingFactors: array[0..4] of Double;
 begin
   if (Request.Method <> 'GET') and (Request.Method <> 'HEAD') then
   begin
@@ -722,10 +758,65 @@ begin
     end;
     if (not Passed) and (BestIndex >= 0) and (Length(Solution.Passes) > 0) then
     begin
-      RefinementCandidates := BuildStarterSeedRefinementCandidates(BestSeed, Solution);
-      for CandidateIndex := Low(RefinementCandidates) to High(RefinementCandidates) do
+      MaxRefinementLevels := 3;
+      for RefinementLevel := 0 to MaxRefinementLevels do
       begin
-        CandidateSeed := RefinementCandidates[CandidateIndex];
+        RefinementCandidates := BuildStarterSeedRefinementCandidates(BestSeed, Solution, RefinementLevel);
+        for CandidateIndex := Low(RefinementCandidates) to High(RefinementCandidates) do
+        begin
+          CandidateSeed := RefinementCandidates[CandidateIndex];
+          CandidateSolution := SolveSimpleArcEstimatorServer(
+            ArcRadius,
+            DegToRad(ArcDeltaPsi),
+            CandidateSeed.Swtd,
+            CandidateSeed.DesStrAng,
+            ArcSteerMax,
+            BaseX,
+            BaseY,
+            BaseAngle,
+            HEst
+          );
+          if IsPassingStarterSeedSolution(CandidateSolution) then
+          begin
+            Solution := CandidateSolution;
+            StarterSeed := CandidateSeed;
+            BestIndex := 1000 + (RefinementLevel * 100) + CandidateIndex;
+            Passed := True;
+            Break;
+          end;
+          CandidateScore := CandidateSolution.PositionError + CandidateSolution.HeadingError;
+          if CandidateScore < BestScore then
+          begin
+            BestScore := CandidateScore;
+            BestIndex := 1000 + (RefinementLevel * 100) + CandidateIndex;
+            BestSeed := CandidateSeed;
+            Solution := CandidateSolution;
+          end;
+        end;
+        if Passed then
+          Break;
+      end;
+    end;
+    if (not Passed) and (BestIndex >= 0) and (Length(Solution.Passes) > 0) then
+    begin
+      CurrentSeed := BestSeed;
+      CurrentSolution := Solution;
+      DampingFactors[0] := 1.0;
+      DampingFactors[1] := 0.5;
+      DampingFactors[2] := 0.25;
+      DampingFactors[3] := 0.125;
+      DampingFactors[4] := 0.0625;
+      for NewtonLevel := 0 to 4 do
+      begin
+        CenterPass := GetFinalTracePass(CurrentSolution);
+        if (not IsFiniteDouble(CenterPass.PErr)) or (not IsFiniteDouble(CenterPass.HErr)) then
+          Break;
+
+        SwtdStep := Max(CurrentSeed.Swtd * (0.01 * Power(0.5, NewtonLevel)), 1e-6);
+        DesStep := Max((Pi / 360) * Power(0.5, NewtonLevel), 1e-6);
+
+        CandidateSeed := CurrentSeed;
+        CandidateSeed.Swtd := Max(1e-6, CurrentSeed.Swtd + SwtdStep);
         CandidateSolution := SolveSimpleArcEstimatorServer(
           ArcRadius,
           DegToRad(ArcDeltaPsi),
@@ -737,22 +828,106 @@ begin
           BaseAngle,
           HEst
         );
-        if IsPassingStarterSeedSolution(CandidateSolution) then
-        begin
-          Solution := CandidateSolution;
-          StarterSeed := CandidateSeed;
-          BestIndex := 1000 + CandidateIndex;
-          Passed := True;
+        PlusSwtdPass := GetFinalTracePass(CandidateSolution);
+
+        CandidateSeed := CurrentSeed;
+        CandidateSeed.Swtd := Max(1e-6, CurrentSeed.Swtd - SwtdStep);
+        CandidateSolution := SolveSimpleArcEstimatorServer(
+          ArcRadius,
+          DegToRad(ArcDeltaPsi),
+          CandidateSeed.Swtd,
+          CandidateSeed.DesStrAng,
+          ArcSteerMax,
+          BaseX,
+          BaseY,
+          BaseAngle,
+          HEst
+        );
+        MinusSwtdPass := GetFinalTracePass(CandidateSolution);
+
+        CandidateSeed := CurrentSeed;
+        CandidateSeed.DesStrAng := ClampDouble(CurrentSeed.DesStrAng + DesStep, 0, Pi / 2);
+        CandidateSolution := SolveSimpleArcEstimatorServer(
+          ArcRadius,
+          DegToRad(ArcDeltaPsi),
+          CandidateSeed.Swtd,
+          CandidateSeed.DesStrAng,
+          ArcSteerMax,
+          BaseX,
+          BaseY,
+          BaseAngle,
+          HEst
+        );
+        PlusDesPass := GetFinalTracePass(CandidateSolution);
+
+        CandidateSeed := CurrentSeed;
+        CandidateSeed.DesStrAng := ClampDouble(CurrentSeed.DesStrAng - DesStep, 0, Pi / 2);
+        CandidateSolution := SolveSimpleArcEstimatorServer(
+          ArcRadius,
+          DegToRad(ArcDeltaPsi),
+          CandidateSeed.Swtd,
+          CandidateSeed.DesStrAng,
+          ArcSteerMax,
+          BaseX,
+          BaseY,
+          BaseAngle,
+          HEst
+        );
+        MinusDesPass := GetFinalTracePass(CandidateSolution);
+
+        Jacobian11 := (PlusSwtdPass.PErr - MinusSwtdPass.PErr) / (2 * SwtdStep);
+        Jacobian21 := (PlusSwtdPass.HErr - MinusSwtdPass.HErr) / (2 * SwtdStep);
+        Jacobian12 := (PlusDesPass.PErr - MinusDesPass.PErr) / (2 * DesStep);
+        Jacobian22 := (PlusDesPass.HErr - MinusDesPass.HErr) / (2 * DesStep);
+        Determinant := (Jacobian11 * Jacobian22) - (Jacobian12 * Jacobian21);
+        if Abs(Determinant) <= 1e-12 then
           Break;
-        end;
-        CandidateScore := CandidateSolution.PositionError + CandidateSolution.HeadingError;
-        if CandidateScore < BestScore then
+
+        DeltaSwtd := -((Jacobian22 * CenterPass.PErr) - (Jacobian12 * CenterPass.HErr)) / Determinant;
+        DeltaDes := -(((-Jacobian21) * CenterPass.PErr + (Jacobian11 * CenterPass.HErr)) / Determinant);
+
+        for CandidateIndex := Low(DampingFactors) to High(DampingFactors) do
         begin
-          BestScore := CandidateScore;
-          BestIndex := 1000 + CandidateIndex;
-          BestSeed := CandidateSeed;
-          Solution := CandidateSolution;
+          Alpha := DampingFactors[CandidateIndex];
+          CandidateSeed := CurrentSeed;
+          CandidateSeed.Swtd := Max(1e-6, CurrentSeed.Swtd + (DeltaSwtd * Alpha));
+          CandidateSeed.DesStrAng := ClampDouble(CurrentSeed.DesStrAng + (DeltaDes * Alpha), 0, Pi / 2);
+          CandidateSeed.Source := 'starter-newton';
+          CandidateSeed.Confidence := 0.99 - (Alpha * 0.04);
+          CandidateSolution := SolveSimpleArcEstimatorServer(
+            ArcRadius,
+            DegToRad(ArcDeltaPsi),
+            CandidateSeed.Swtd,
+            CandidateSeed.DesStrAng,
+            ArcSteerMax,
+            BaseX,
+            BaseY,
+            BaseAngle,
+            HEst
+          );
+          if IsPassingStarterSeedSolution(CandidateSolution) then
+          begin
+            Solution := CandidateSolution;
+            StarterSeed := CandidateSeed;
+            BestIndex := 2000 + (NewtonLevel * 10) + Round(Alpha * 10);
+            Passed := True;
+            Break;
+          end;
+          CandidateScore := CandidateSolution.PositionError + CandidateSolution.HeadingError;
+          if CandidateScore < BestScore then
+          begin
+            BestScore := CandidateScore;
+            BestIndex := 2000 + (NewtonLevel * 10) + Round(Alpha * 10);
+            BestSeed := CandidateSeed;
+            Solution := CandidateSolution;
+          end;
         end;
+
+        if Passed then
+          Break;
+
+        CurrentSeed := BestSeed;
+        CurrentSolution := Solution;
       end;
     end;
     if (not Passed) and (BestIndex >= 0) then
