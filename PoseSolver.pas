@@ -1,5 +1,7 @@
 unit PoseSolver;
 
+{$mode delphi}
+
 interface
 
 uses
@@ -11,7 +13,7 @@ type
     X: Double;
     Y: Double;
     Angle: Double;
-    Theta: Double;
+    SteerAngle: Double;
     Radius: Double;
     CurveLength: Double;
   end;
@@ -19,7 +21,7 @@ type
   TBesselTable = array[0..511] of Double;
 
 function MakeVehiclePose(
-  const X, Y, Angle, Theta, Radius, CurveLength: Double
+  const X, Y, Angle, SteerAngle, Radius, CurveLength: Double
 ): TVehiclePose;
 
 function IntegrateVehiclePoseForSlew(const Distance, HeadingChangePerDistance: Double): TVehiclePose;
@@ -109,13 +111,13 @@ begin
 end;
 
 function MakeVehiclePose(
-  const X, Y, Angle, Theta, Radius, CurveLength: Double
+  const X, Y, Angle, SteerAngle, Radius, CurveLength: Double
 ): TVehiclePose;
 begin
   Result.X := X;
   Result.Y := Y;
   Result.Angle := Angle;
-  Result.Theta := Theta;
+  Result.SteerAngle := SteerAngle;
   Result.Radius := Radius;
   Result.CurveLength := CurveLength;
 end;
@@ -449,7 +451,7 @@ begin
     Result.X := LocalRear.Re;
     Result.Y := LocalRear.Im;
     Result.Angle := (2 * Sqr(Sin(PhaseSpan / 2))) / SafeSlew;
-    Result.Theta := HeadingChange;
+    Result.SteerAngle := HeadingChange;
     Result.Radius := 0;
     Result.CurveLength := 0;
   end;
@@ -488,7 +490,7 @@ begin
   Result.X := FrontX - Cos(BodyDelta);
   Result.Y := FrontY - Sin(BodyDelta);
   Result.Angle := BodyDelta;
-  Result.Theta := HeadingChange;
+  Result.SteerAngle := HeadingChange;
   Result.Radius := 0;
   Result.CurveLength := 0;
 end;
@@ -536,7 +538,7 @@ begin
     BaseX + LocalPose.X * CosBase - LocalPose.Y * SinBase,
     BaseY + LocalPose.X * SinBase + LocalPose.Y * CosBase,
     BaseAngle + LocalPose.Angle,
-    LocalPose.Theta,
+    LocalPose.SteerAngle,
     Radius,
     CurveLength
   );

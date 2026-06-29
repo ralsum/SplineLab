@@ -5,11 +5,13 @@ program SplineLabServer;
 uses
   Classes,
   SysUtils,
+  Math,
   StrUtils,
   fphttpserver,
   httpdefs,
   PoseSolver,
-  ServerSimpleArcSolver;
+  ServerSimpleArcSolver,
+  StarterSeedCreator;
 
 function libc_isatty(fd: LongInt): LongInt; cdecl; external 'c' name 'isatty';
 
@@ -70,6 +72,15 @@ begin
     Result := 'false';
 end;
 
+function ClampDouble(const Value, AMin, AMax: Double): Double;
+begin
+  Result := Value;
+  if Result < AMin then
+    Result := AMin
+  else if Result > AMax then
+    Result := AMax;
+end;
+
 function JsonString(const Value: string): string;
 var
   I: Integer;
@@ -105,7 +116,7 @@ begin
     '"x":' + JsonFloat(Pose.X) + ',' +
     '"y":' + JsonFloat(Pose.Y) + ',' +
     '"angle":' + JsonFloat(Pose.Angle) + ',' +
-    '"theta":' + JsonFloat(Pose.Theta) + ',' +
+    '"strAng":' + JsonFloat(Pose.SteerAngle) + ',' +
     '"radius":' + JsonFloat(Pose.Radius) + ',' +
     '"curveLength":' + JsonFloat(Pose.CurveLength) +
   '}';
@@ -129,7 +140,7 @@ begin
     '"x":' + JsonFloat(Point.X) + ',' +
     '"y":' + JsonFloat(Point.Y) + ',' +
     '"heading":' + JsonFloat(Point.Heading) + ',' +
-    '"theta":' + JsonFloat(Point.Theta) +
+    '"strAng":' + JsonFloat(Point.SteerAngle) +
   '}';
 end;
 
@@ -147,29 +158,34 @@ begin
   Result := Result + ']';
 end;
 
-function JsonTraceCandidate(const Candidate: TTraceCandidate): string;
-begin
-  Result := '{' +
-    '"finalSteer":' + JsonFloat(Candidate.FinalSteer) + ',' +
-    '"pathLength":' + JsonFloat(Candidate.PathLength) + ',' +
-    '"positionError":' + JsonFloat(Candidate.PositionError) + ',' +
-    '"headingError":' + JsonFloat(Candidate.HeadingError) + ',' +
-    '"headingNormalError":' + JsonFloat(Candidate.HeadingNormalError) + ',' +
-    '"headingNormalSatisfied":' + JsonBool(Candidate.HeadingNormalSatisfied) +
-  '}';
-end;
-
 function JsonTracePass(const Pass: TTracePass): string;
 begin
   Result := '{' +
+    '"hEst":' + IntToStr(Pass.HEst) + ',' +
     '"pass":' + IntToStr(Pass.Pass) + ',' +
     '"steerCenter":' + JsonFloat(Pass.SteerCenter) + ',' +
     '"pathCenter":' + JsonFloat(Pass.PathCenter) + ',' +
+    '"swtd":' + JsonFloat(Pass.Swtd) + ',' +
+    '"s":' + JsonFloat(Pass.Swtd) + ',' +
+    '"curveLength":' + JsonFloat(Pass.Swtd) + ',' +
+    '"desStrAng":' + JsonFloat(Pass.DesiredSteerAngle) + ',' +
+    '"headingChange":' + JsonFloat(Pass.HeadingChange) + ',' +
+    '"turnAngle":' + JsonFloat(Pass.HeadingChange) + ',' +
+    '"strAng":' + JsonFloat(Pass.HeadingChange) + ',' +
+    '"hRt":' + JsonFloat(Pass.HeadingChangePerDistance) + ',' +
+    '"headingChangePerDistance":' + JsonFloat(Pass.HeadingChangePerDistance) + ',' +
+    '"slew":' + JsonFloat(Pass.HeadingChangePerDistance) + ',' +
+    '"sl":' + JsonFloat(Pass.HeadingChangePerDistance) + ',' +
+    '"pErr":' + JsonFloat(Pass.PErr) + ',' +
+    '"dPErr":' + JsonFloat(Pass.DPErr) + ',' +
+    '"hErr":' + JsonFloat(Pass.HErr) + ',' +
+    '"vc":' + JsonPoint2D(Pass.Vc.X, Pass.Vc.Y) + ',' +
+    '"complexVc":' + JsonPoint2D(Pass.Vc.X, Pass.Vc.Y) + ',' +
     '"steerSpan":' + JsonFloat(Pass.SteerSpan) + ',' +
     '"pathSpan":' + JsonFloat(Pass.PathSpan) + ',' +
     '"terminalPose":' + JsonPose(Pass.TerminalPose) + ',' +
-    '"pathBest":' + IfThen(Pass.PathBestValid, JsonTraceCandidate(Pass.PathBest), 'null') + ',' +
-    '"steerBest":' + IfThen(Pass.SteerBestValid, JsonTraceCandidate(Pass.SteerBest), 'null') +
+    '"finalPose":' + JsonPose(Pass.TerminalPose) + ',' +
+    '"complexTerminalPose":' + JsonPose(Pass.TerminalPose) +
   '}';
 end;
 
@@ -185,6 +201,237 @@ begin
     Result := Result + JsonTracePass(Passes[I]);
   end;
   Result := Result + ']';
+end;
+
+function JsonDoubleArray(const Values: array of Double): string;
+var
+  I: Integer;
+begin
+  Result := '[';
+  for I := Low(Values) to High(Values) do
+  begin
+    if I > Low(Values) then
+      Result := Result + ',';
+    Result := Result + JsonFloat(Values[I]);
+  end;
+  Result := Result + ']';
+end;
+
+function JsonStarterSeedCell(const Cell: TStarterSeedCell): string;
+begin
+  Result := '{' +
+    '"stepIndex":' + IntToStr(Cell.StepIndex) + ',' +
+    '"radiusIndex":' + IntToStr(Cell.RadiusIndex) + ',' +
+    '"radius":' + JsonFloat(Cell.Radius) + ',' +
+    '"radiusAxisValue":' + JsonFloat(Cell.RadiusAxisValue) + ',' +
+    '"rawPsiDegrees":' + JsonFloat(Cell.RawPsiDegrees) + ',' +
+    '"swtd":' + JsonFloat(Cell.Swtd) + ',' +
+    '"desStrAng":' + JsonFloat(Cell.DesStrAng) + ',' +
+    '"source":' + JsonString(Cell.Source) + ',' +
+    '"confidence":' + JsonFloat(Cell.Confidence) +
+  '}';
+end;
+
+function JsonStarterSeedRow(const Row: TStarterSeedRow): string;
+var
+  I: Integer;
+begin
+  Result := '[';
+  for I := Low(Row) to High(Row) do
+  begin
+    if I > Low(Row) then
+      Result := Result + ',';
+    Result := Result + JsonStarterSeedCell(Row[I]);
+  end;
+  Result := Result + ']';
+end;
+
+function JsonStarterSeedGrid(const Grid: TStarterSeedGrid): string;
+var
+  I: Integer;
+begin
+  Result := '[';
+  for I := Low(Grid) to High(Grid) do
+  begin
+    if I > Low(Grid) then
+      Result := Result + ',';
+    Result := Result + JsonStarterSeedRow(Grid[I]);
+  end;
+  Result := Result + ']';
+end;
+
+function JsonServerSimpleArcSolution(const Solution: TServerSimpleArcSolution): string;
+begin
+  Result := '{' +
+    '"ok":true,' +
+    '"success":' + JsonBool(Solution.Success) + ',' +
+    '"edgeCase":' + JsonBool(Solution.EdgeCase) + ',' +
+    '"edgeCaseReason":' + JsonString(Solution.EdgeCaseReason) + ',' +
+    '"radius":' + JsonFloat(Solution.Radius) + ',' +
+    '"swtd":' + JsonFloat(Solution.S) + ',' +
+    '"headingChange":' + JsonFloat(Solution.TurnAngle) + ',' +
+    '"headingChangePerDistance":' + JsonFloat(Solution.Sl) + ',' +
+    '"arcLength":' + JsonFloat(Solution.ArcLength) + ',' +
+    '"s":' + JsonFloat(Solution.S) + ',' +
+    '"sl":' + JsonFloat(Solution.Sl) + ',' +
+    '"slew":' + JsonFloat(Solution.Sl) + ',' +
+    '"turnAngle":' + JsonFloat(Solution.TurnAngle) + ',' +
+    '"finalHeading":' + JsonFloat(Solution.FinalHeading) + ',' +
+    '"strAng":' + JsonFloat(Solution.TerminalPose.SteerAngle) + ',' +
+    '"curveLength":' + JsonFloat(Solution.CurveLength) + ',' +
+    '"steeredWheelTravelDistance":' + JsonFloat(Solution.CurveLength) + ',' +
+    '"positionError":' + JsonFloat(Solution.PositionError) + ',' +
+    '"headingError":' + JsonFloat(Solution.HeadingError) + ',' +
+    '"headingNormalAngle":' + JsonFloat(Solution.HeadingNormalAngle) + ',' +
+    '"headingNormalError":' + JsonFloat(Solution.HeadingNormalError) + ',' +
+    '"headingNormalSatisfied":' + JsonBool(Solution.HeadingNormalSatisfied) + ',' +
+    '"vc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
+    '"complexVc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
+    '"terminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
+    '"complexTerminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
+    '"finalPose":' + JsonPose(Solution.FinalPose) + ',' +
+    '"terminalCoord":' + JsonCoord(Solution.TerminalCoord) + ',' +
+    '"terminalRadius":' + JsonFloat(Sqrt(Sqr(Solution.Vc.X - Solution.TerminalPose.X) + Sqr(Solution.Vc.Y - Solution.TerminalPose.Y))) + ',' +
+    '"pathPoints":' + JsonPathPoints(Solution.PathPoints) + ',' +
+    '"passes":' + JsonTracePasses(Solution.Passes) +
+  '}';
+end;
+
+function IsFiniteDouble(const Value: Double): Boolean;
+begin
+  Result := (not IsNan(Value)) and (Abs(Value) < 1.0E300);
+end;
+
+function IsPassingStarterSeedSolution(const Solution: TServerSimpleArcSolution): Boolean;
+begin
+  Result := Solution.Success
+    and Solution.HeadingNormalSatisfied
+    and IsFiniteDouble(Solution.PositionError)
+    and IsFiniteDouble(Solution.HeadingError)
+    and (Solution.PositionError <= 1e-7)
+    and (Solution.HeadingError <= 1e-7);
+end;
+
+function NormalizeStarterSeedCell(
+  const Seed: TStarterSeedCell;
+  const Radius, RawPsiDegrees: Double;
+  const Source: string;
+  const Confidence: Double
+): TStarterSeedCell;
+begin
+  Result := Seed;
+  Result.Radius := Radius;
+  Result.RawPsiDegrees := RawPsiDegrees;
+  Result.Source := Source;
+  Result.Confidence := Confidence;
+end;
+
+function GetFinalTracePass(const Solution: TServerSimpleArcSolution): TTracePass;
+begin
+  Result := Default(TTracePass);
+  if Length(Solution.Passes) > 0 then
+    Result := Solution.Passes[High(Solution.Passes)];
+end;
+
+function BuildStarterSeedRefinementCandidates(
+  const BaseSeed: TStarterSeedCell;
+  const Solution: TServerSimpleArcSolution
+): TStarterSeedRow;
+var
+  FinalPass: TTracePass;
+  CenterSeed, Candidate: TStarterSeedCell;
+  SwtdCenter, SwtdStep, DesCenter, DesStep: Double;
+  Count: Integer;
+  PositiveP, PositiveH: Boolean;
+
+  procedure AppendUniqueCandidate(const Seed: TStarterSeedCell);
+  var
+    Index: Integer;
+  begin
+    for Index := 0 to Count - 1 do
+    begin
+      if (Abs(Result[Index].Swtd - Seed.Swtd) < 1e-12)
+        and (Abs(Result[Index].DesStrAng - Seed.DesStrAng) < 1e-12) then
+        Exit;
+    end;
+    SetLength(Result, Count + 1);
+    Result[Count] := Seed;
+    Inc(Count);
+  end;
+
+begin
+  SetLength(Result, 0);
+  Count := 0;
+  FinalPass := GetFinalTracePass(Solution);
+  if IsFiniteDouble(FinalPass.Swtd) then
+    SwtdCenter := Max(1e-6, FinalPass.Swtd)
+  else
+    SwtdCenter := Max(1e-6, BaseSeed.Swtd);
+  if IsFiniteDouble(FinalPass.DesiredSteerAngle) then
+    DesCenter := FinalPass.DesiredSteerAngle
+  else
+    DesCenter := BaseSeed.DesStrAng;
+  SwtdStep := Max(SwtdCenter * 0.005, 1e-6);
+  DesStep := Max(Pi / 720, Abs(DesCenter) * 0.005);
+  PositiveP := FinalPass.PErr >= 0;
+  PositiveH := FinalPass.HErr >= 0;
+
+  CenterSeed := BaseSeed;
+  CenterSeed.Swtd := SwtdCenter;
+  CenterSeed.DesStrAng := ClampDouble(DesCenter, 0, Pi / 2);
+  CenterSeed.Source := 'starter-refine-center';
+  CenterSeed.Confidence := 0.99;
+  AppendUniqueCandidate(CenterSeed);
+
+  Candidate := CenterSeed;
+  Candidate.Swtd := Max(1e-6, SwtdCenter - SwtdStep);
+  Candidate.Source := 'starter-refine-swtd-low';
+  Candidate.Confidence := 0.97;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  Candidate.Swtd := SwtdCenter + SwtdStep;
+  Candidate.Source := 'starter-refine-swtd-high';
+  Candidate.Confidence := 0.965;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  Candidate.DesStrAng := ClampDouble(DesCenter - DesStep, 0, Pi / 2);
+  Candidate.Source := 'starter-refine-des-low';
+  Candidate.Confidence := 0.96;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  Candidate.DesStrAng := ClampDouble(DesCenter + DesStep, 0, Pi / 2);
+  Candidate.Source := 'starter-refine-des-high';
+  Candidate.Confidence := 0.955;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  if PositiveP then
+    Candidate.Swtd := Max(1e-6, SwtdCenter - SwtdStep)
+  else
+    Candidate.Swtd := SwtdCenter + SwtdStep;
+  if PositiveH then
+    Candidate.DesStrAng := ClampDouble(DesCenter - DesStep, 0, Pi / 2)
+  else
+    Candidate.DesStrAng := ClampDouble(DesCenter + DesStep, 0, Pi / 2);
+  Candidate.Source := 'starter-refine-diagonal-a';
+  Candidate.Confidence := 0.95;
+  AppendUniqueCandidate(Candidate);
+
+  Candidate := CenterSeed;
+  if PositiveP then
+    Candidate.Swtd := SwtdCenter + SwtdStep
+  else
+    Candidate.Swtd := Max(1e-6, SwtdCenter - SwtdStep);
+  if PositiveH then
+    Candidate.DesStrAng := ClampDouble(DesCenter + DesStep, 0, Pi / 2)
+  else
+    Candidate.DesStrAng := ClampDouble(DesCenter - DesStep, 0, Pi / 2);
+  Candidate.Source := 'starter-refine-diagonal-b';
+  Candidate.Confidence := 0.945;
+  AppendUniqueCandidate(Candidate);
 end;
 
 function EscapeJsonString(const Value: string): string;
@@ -339,10 +586,20 @@ procedure TStaticServer.RequestHandler(Sender: TObject; var Request: TFPHTTPConn
 var
   FilePath, EffectivePath: string;
   Stream: TFileStream;
-  BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius: Double;
+  HEst: Integer;
+  BaseX, BaseY, BaseAngle, Swtd, HeadingChange, HeadingChangePerDistance: Double;
   Pose: TVehiclePose;
-  ArcRadius, ArcDeltaPsi, ArcSteerMax, InitialSl: Double;
+  ArcRadius, ArcDeltaPsi, SwtdSeed, ArcSteerMax, InitialSl, DesiredSteerAngleSeed: Double;
   Solution: TServerSimpleArcSolution;
+  StarterGrid: TStarterSeedGrid;
+  StarterCandidates: TStarterSeedRow;
+  RefinementCandidates: TStarterSeedRow;
+  StarterSeed: TStarterSeedCell;
+  CandidateIndex, BestIndex: Integer;
+  CandidateSeed, BestSeed: TStarterSeedCell;
+  CandidateSolution: TServerSimpleArcSolution;
+  BestScore, CandidateScore: Double;
+  Passed: Boolean;
 begin
   if (Request.Method <> 'GET') and (Request.Method <> 'HEAD') then
   begin
@@ -356,11 +613,17 @@ begin
     BaseX := ParseQueryFloat(Request.URI, 'baseX', 0);
     BaseY := ParseQueryFloat(Request.URI, 'baseY', 0);
     BaseAngle := ParseQueryFloat(Request.URI, 'baseAngle', 0);
-    Distance := ParseQueryFloat(Request.URI, 'distance', 0);
-    Slew := ParseQueryFloat(Request.URI, 'headingChangePerDistance', ParseQueryFloat(Request.URI, 'slew', 0));
-    CurveLength := ParseQueryFloat(Request.URI, 'curveLength', 0);
-    Radius := ParseQueryFloat(Request.URI, 'radius', 0);
-    Pose := SampleVehiclePoseForSlew(BaseX, BaseY, BaseAngle, Distance, Slew, CurveLength, Radius);
+    Swtd := ParseQueryFloat(Request.URI, 'swtd', ParseQueryFloat(Request.URI, 'distance', 0));
+    HeadingChange := ParseQueryFloat(Request.URI, 'headingChange', ParseQueryFloat(Request.URI, 'deltaPsi', 0));
+    HeadingChangePerDistance := ParseQueryFloat(Request.URI, 'headingChangePerDistance', ParseQueryFloat(Request.URI, 'slew', 0));
+    if Abs(HeadingChangePerDistance) < 1e-12 then
+    begin
+      if Abs(Swtd) > 1e-12 then
+        HeadingChangePerDistance := HeadingChange / Swtd
+      else
+        HeadingChangePerDistance := 0;
+    end;
+    Pose := SampleVehiclePoseForSlew(BaseX, BaseY, BaseAngle, Swtd, HeadingChangePerDistance, Abs(Swtd), 0);
     SendJsonResponse(
       Response,
       200,
@@ -370,7 +633,7 @@ begin
           '"x":' + JsonFloat(Pose.X) + ',' +
           '"y":' + JsonFloat(Pose.Y) + ',' +
           '"angle":' + JsonFloat(Pose.Angle) + ',' +
-          '"theta":' + JsonFloat(Pose.Theta) + ',' +
+          '"strAng":' + JsonFloat(Pose.SteerAngle) + ',' +
           '"radius":' + JsonFloat(Pose.Radius) + ',' +
           '"curveLength":' + JsonFloat(Pose.CurveLength) +
         '}' +
@@ -381,46 +644,132 @@ begin
 
   if SameText(Copy(StripQuery(Request.URI), 1, Length('/api/solve-simple-arc')), '/api/solve-simple-arc') then
   begin
+    SwtdSeed := ParseQueryFloat(Request.URI, 'swtd', ParseQueryFloat(Request.URI, 'distance', 0.000001));
     ArcRadius := ParseQueryFloat(Request.URI, 'radius', 1);
-    ArcDeltaPsi := ParseQueryFloat(Request.URI, 'deltaPsi', Pi / 2);
+    ArcDeltaPsi := ParseQueryFloat(Request.URI, 'deltaPsi', ParseQueryFloat(Request.URI, 'headingChange', Pi / 2));
     ArcSteerMax := ParseQueryFloat(Request.URI, 'steerMax', Pi / 2);
-    InitialSl := ParseQueryFloat(Request.URI, 'slew', ParseQueryFloat(Request.URI, 'initialSl', 1.14));
+    InitialSl := ParseQueryFloat(Request.URI, 'headingChangePerDistance', ParseQueryFloat(Request.URI, 'slew', ParseQueryFloat(Request.URI, 'initialSl', 1.14)));
+    DesiredSteerAngleSeed := ParseQueryFloat(Request.URI, 'desStrAng', InitialSl * SwtdSeed);
     BaseX := ParseQueryFloat(Request.URI, 'vehicleX', 0);
     BaseY := ParseQueryFloat(Request.URI, 'vehicleY', 0);
     BaseAngle := ParseQueryFloat(Request.URI, 'vehicleAngle', 0);
-    Solution := SolveSimpleArcServer(ArcRadius, ArcDeltaPsi, ArcSteerMax, InitialSl, BaseX, BaseY, BaseAngle);
+    HEst := StrToIntDef(ResolveQueryValue(Request.URI, 'hEst'), 0);
+    Solution := SolveSimpleArcEstimatorServer(
+      ArcRadius,
+      ArcDeltaPsi,
+      SwtdSeed,
+      DesiredSteerAngleSeed,
+      ArcSteerMax,
+      BaseX,
+      BaseY,
+      BaseAngle,
+      HEst
+    );
+    SendJsonResponse(Response, 200, JsonServerSimpleArcSolution(Solution));
+    Exit;
+  end;
+
+  if SameText(Copy(StripQuery(Request.URI), 1, Length('/api/starter-seed-solve')), '/api/starter-seed-solve') then
+  begin
+    ArcRadius := ParseQueryFloat(Request.URI, 'radius', 1);
+    ArcDeltaPsi := ParseQueryFloat(Request.URI, 'rawPsiDegrees', 90);
+    ArcSteerMax := ParseQueryFloat(Request.URI, 'steerMaxDegrees', 90);
+    BaseX := ParseQueryFloat(Request.URI, 'vehicleX', 0);
+    BaseY := ParseQueryFloat(Request.URI, 'vehicleY', 0);
+    BaseAngle := ParseQueryFloat(Request.URI, 'vehicleAngle', 0);
+    HEst := StrToIntDef(ResolveQueryValue(Request.URI, 'hEst'), 0);
+    StarterCandidates := BuildStarterSeedCandidates(ArcRadius, ArcDeltaPsi);
+    if Length(StarterCandidates) = 0 then
+      StarterCandidates := BuildStarterSeedCandidates(1, 90);
+    Solution := Default(TServerSimpleArcSolution);
+    StarterSeed := GetStarterSeedForRequest(ArcRadius, ArcDeltaPsi);
+    ArcSteerMax := DegToRad(ArcSteerMax);
+    if ArcSteerMax <= 0 then
+      ArcSteerMax := Pi / 2;
+    BestScore := MaxDouble;
+    BestIndex := -1;
+    Passed := False;
+    for CandidateIndex := Low(StarterCandidates) to High(StarterCandidates) do
+    begin
+      CandidateSeed := StarterCandidates[CandidateIndex];
+      CandidateSolution := SolveSimpleArcEstimatorServer(
+        ArcRadius,
+        DegToRad(ArcDeltaPsi),
+        CandidateSeed.Swtd,
+        CandidateSeed.DesStrAng,
+        ArcSteerMax,
+        BaseX,
+        BaseY,
+        BaseAngle,
+        HEst
+      );
+      CandidateScore := CandidateSolution.PositionError + CandidateSolution.HeadingError;
+      if IsPassingStarterSeedSolution(CandidateSolution) then
+      begin
+        Solution := CandidateSolution;
+        StarterSeed := CandidateSeed;
+        BestIndex := CandidateIndex;
+        Passed := True;
+        Break;
+      end;
+      if CandidateScore < BestScore then
+      begin
+        BestScore := CandidateScore;
+        BestIndex := CandidateIndex;
+        BestSeed := CandidateSeed;
+        Solution := CandidateSolution;
+      end;
+    end;
+    if (not Passed) and (BestIndex >= 0) and (Length(Solution.Passes) > 0) then
+    begin
+      RefinementCandidates := BuildStarterSeedRefinementCandidates(BestSeed, Solution);
+      for CandidateIndex := Low(RefinementCandidates) to High(RefinementCandidates) do
+      begin
+        CandidateSeed := RefinementCandidates[CandidateIndex];
+        CandidateSolution := SolveSimpleArcEstimatorServer(
+          ArcRadius,
+          DegToRad(ArcDeltaPsi),
+          CandidateSeed.Swtd,
+          CandidateSeed.DesStrAng,
+          ArcSteerMax,
+          BaseX,
+          BaseY,
+          BaseAngle,
+          HEst
+        );
+        if IsPassingStarterSeedSolution(CandidateSolution) then
+        begin
+          Solution := CandidateSolution;
+          StarterSeed := CandidateSeed;
+          BestIndex := 1000 + CandidateIndex;
+          Passed := True;
+          Break;
+        end;
+        CandidateScore := CandidateSolution.PositionError + CandidateSolution.HeadingError;
+        if CandidateScore < BestScore then
+        begin
+          BestScore := CandidateScore;
+          BestIndex := 1000 + CandidateIndex;
+          BestSeed := CandidateSeed;
+          Solution := CandidateSolution;
+        end;
+      end;
+    end;
+    if (not Passed) and (BestIndex >= 0) then
+      StarterSeed := BestSeed;
     SendJsonResponse(
       Response,
       200,
       '{' +
         '"ok":true,' +
-        '"success":' + JsonBool(Solution.Success) + ',' +
-        '"edgeCase":' + JsonBool(Solution.EdgeCase) + ',' +
-        '"edgeCaseReason":' + JsonString(Solution.EdgeCaseReason) + ',' +
-        '"radius":' + JsonFloat(Solution.Radius) + ',' +
-        '"arcLength":' + JsonFloat(Solution.ArcLength) + ',' +
-        '"s":' + JsonFloat(Solution.S) + ',' +
-        '"sl":' + JsonFloat(Solution.Sl) + ',' +
-        '"slew":' + JsonFloat(Solution.Sl) + ',' +
-        '"turnAngle":' + JsonFloat(Solution.TurnAngle) + ',' +
-        '"finalHeading":' + JsonFloat(Solution.FinalHeading) + ',' +
-        '"theta":' + JsonFloat(Solution.TerminalPose.Theta) + ',' +
-        '"curveLength":' + JsonFloat(Solution.CurveLength) + ',' +
-        '"steeredWheelTravelDistance":' + JsonFloat(Solution.CurveLength) + ',' +
-        '"positionError":' + JsonFloat(Solution.PositionError) + ',' +
-        '"headingError":' + JsonFloat(Solution.HeadingError) + ',' +
-        '"headingNormalAngle":' + JsonFloat(Solution.HeadingNormalAngle) + ',' +
-        '"headingNormalError":' + JsonFloat(Solution.HeadingNormalError) + ',' +
-        '"headingNormalSatisfied":' + JsonBool(Solution.HeadingNormalSatisfied) + ',' +
-        '"vc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
-        '"complexVc":' + JsonPoint2D(Solution.Vc.X, Solution.Vc.Y) + ',' +
-        '"terminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
-        '"complexTerminalPose":' + JsonPose(Solution.TerminalPose) + ',' +
-        '"finalPose":' + JsonPose(Solution.FinalPose) + ',' +
-        '"terminalCoord":' + JsonCoord(Solution.TerminalCoord) + ',' +
-        '"terminalRadius":' + JsonFloat(Sqrt(Sqr(Solution.Vc.X - Solution.TerminalPose.X) + Sqr(Solution.Vc.Y - Solution.TerminalPose.Y))) + ',' +
-        '"pathPoints":' + JsonPathPoints(Solution.PathPoints) + ',' +
-        '"passes":' + JsonTracePasses(Solution.Passes) +
+        '"radius":' + JsonFloat(ArcRadius) + ',' +
+        '"rawPsiDegrees":' + JsonFloat(ArcDeltaPsi) + ',' +
+        '"steerMaxDegrees":' + JsonFloat(ArcSteerMax * 180 / Pi) + ',' +
+        '"passed":' + JsonBool(IsPassingStarterSeedSolution(Solution)) + ',' +
+        '"selectedCandidateIndex":' + IntToStr(BestIndex) + ',' +
+        '"selectedCandidate":' + JsonStarterSeedCell(StarterSeed) + ',' +
+        '"starterSeedCandidates":' + JsonStarterSeedRow(StarterCandidates) + ',' +
+        '"solution":' + JsonServerSimpleArcSolution(Solution) +
       '}'
     );
     Exit;
@@ -434,6 +783,27 @@ begin
       '{' +
         '"ok":true,' +
         '"message":' + EscapeJsonString(ReadLaunchStatus) +
+      '}'
+    );
+    Exit;
+  end;
+
+  if SameText(Copy(StripQuery(Request.URI), 1, Length('/api/starter-seeds')), '/api/starter-seeds') then
+  begin
+    StarterGrid := BuildStarterSeedGrid;
+    StarterSeed := GetStarterSeedForRequest(
+      ParseQueryFloat(Request.URI, 'radius', 1),
+      ParseQueryFloat(Request.URI, 'rawPsiDegrees', 90)
+    );
+    SendJsonResponse(
+      Response,
+      200,
+      '{' +
+        '"ok":true,' +
+        '"radiusAxis":' + JsonDoubleArray(StarterSeedRadiusAxis) + ',' +
+        '"rawPsiAxis":' + JsonDoubleArray(StarterSeedRawPsiAxis) + ',' +
+        '"starterSeedGrid":' + JsonStarterSeedGrid(StarterGrid) + ',' +
+        '"starterSeed":' + JsonStarterSeedCell(StarterSeed) +
       '}'
     );
     Exit;

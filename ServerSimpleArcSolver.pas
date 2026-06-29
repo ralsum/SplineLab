@@ -7,7 +7,8 @@ interface
 uses
   SysUtils,
   Math,
-  PoseSolver;
+  PoseSolver,
+  SimpleArcSolver;
 
 type
   TServerPoint2D = record
@@ -28,40 +29,25 @@ type
     X: Double;
     Y: Double;
     Heading: Double;
-    Theta: Double;
-  end;
-
-  TLinearSteerPath = record
-    Points: array of TLinearSteerPoint;
-    TerminalPose: TVehiclePose;
-  end;
-
-  TTraceCandidate = record
-    FinalSteer: Double;
-    PathLength: Double;
-    Slew: Double;
-    SignedPositionError: Double;
-    PositionError: Double;
-    HeadingError: Double;
-    HeadingNormalAngle: Double;
-    HeadingNormalError: Double;
-    HeadingNormalSatisfied: Boolean;
-    SteerAtLimit: Boolean;
-    Path: TLinearSteerPath;
-    Vc: TServerPoint2D;
+    SteerAngle: Double;
   end;
 
   TTracePass = record
+    HEst: Integer;
     Pass: Integer;
     SteerCenter: Double;
     PathCenter: Double;
     SteerSpan: Double;
     PathSpan: Double;
+    DesiredSteerAngle: Double;
+    Swtd: Double;
+    HeadingChange: Double;
+    HeadingChangePerDistance: Double;
+    PErr: Double;
+    DPErr: Double;
+    HErr: Double;
+    Vc: TServerPoint2D;
     TerminalPose: TVehiclePose;
-    PathBestValid: Boolean;
-    SteerBestValid: Boolean;
-    PathBest: TTraceCandidate;
-    SteerBest: TTraceCandidate;
   end;
 
   TServerSimpleArcSolution = record
@@ -89,78 +75,30 @@ type
   end;
 
 function SolveSimpleArcServer(
-  const Radius, DeltaPsi, SteerMax, InitialSl: Double;
+  const Swtd, HeadingChange, SteerMax, HeadingChangePerDistanceSeed: Double;
   const VehicleX, VehicleY, VehicleAngle: Double
+): TServerSimpleArcSolution;
+
+function SolveSimpleArcEstimatorServer(
+  const TargetRadius, TargetDeltaPsi, SeedSwtd, DesiredSteerAngle, SteerMax: Double;
+  const VehicleX, VehicleY, VehicleAngle: Double;
+  const HEst: Integer
 ): TServerSimpleArcSolution;
 
 implementation
 
-type
-  TArcGeometry = record
-    Radius: Double;
-    DeltaPsi: Double;
-    SteerMax: Double;
-  end;
+const
+  MinSwtd = 0.000001;
 
-  TArcBisectorGeometry = record
-    Valid: Boolean;
-    Radius: Double;
-    ArcLength: Double;
-    TurnAngle: Double;
-    Center: TServerPoint2D;
-    StartAngle: Double;
-    BisectorAngle: Double;
-    BisectorOrigin: TServerPoint2D;
-    BisectorDir: TServerPoint2D;
-  end;
-
-function ClampDouble(const Value, AMin, AMax: Double): Double;
-begin
-  Result := Value;
-  if Result < AMin then
-    Result := AMin
-  else if Result > AMax then
-    Result := AMax;
-end;
-
-function WrapAngle(const Angle: Double): Double;
+function NormalizePositiveAngle(const Angle: Double): Double;
 begin
   Result := Angle;
   while Result > Pi do
     Result := Result - 2 * Pi;
   while Result < -Pi do
     Result := Result + 2 * Pi;
-end;
-
-function NormalizePositiveAngle(const Angle: Double): Double;
-begin
-  Result := WrapAngle(Angle);
   if Result < 0 then
     Result := Result + 2 * Pi;
-end;
-
-function SignedDistanceToLine(const Point, Origin, Direction: TServerPoint2D): Double;
-begin
-  Result := (Point.X - Origin.X) * Direction.Y - (Point.Y - Origin.Y) * Direction.X;
-end;
-
-function AngleDistanceToPerpendicular(const Angle, LineAngle: Double): Double;
-var
-  TargetAngles: array[0..1] of Double;
-  Target, ErrorValue, Best: Double;
-  I: Integer;
-begin
-  TargetAngles[0] := LineAngle + Pi / 2;
-  TargetAngles[1] := LineAngle - Pi / 2;
-  Best := 1.0E300;
-  for I := Low(TargetAngles) to High(TargetAngles) do
-  begin
-    Target := TargetAngles[I];
-    ErrorValue := Abs(WrapAngle(Angle - Target));
-    if ErrorValue < Best then
-      Best := ErrorValue;
-  end;
-  Result := Best;
 end;
 
 function GetVehiclePerpendicularIntersection(
@@ -172,7 +110,6 @@ var
   SvNormalOrigin, SvNormalDirection: TServerPoint2D;
   Det, Dx, Dy, T: Double;
 begin
-  // VCor is the intersection of the normals to Rp and Sv, matching the browser render.
   RpNormalOrigin := Rear;
   RpNormalDirection.X := -BodyDirection.Y;
   RpNormalDirection.Y := BodyDirection.X;
@@ -196,84 +133,6 @@ begin
   Result := True;
 end;
 
-function GetSimpleArcGeometry(const Radius, DeltaPsi, SteerMax: Double): TArcGeometry;
-begin
-  Result.Radius := Radius;
-  Result.DeltaPsi := DeltaPsi;
-  Result.SteerMax := SteerMax;
-end;
-
-function GetArcLength(const Geometry: TArcGeometry): Double;
-begin
-  Result := Abs(Geometry.Radius) * Abs(Geometry.DeltaPsi);
-end;
-
-function GetSimpleArcBisectorGeometry(const Geometry: TArcGeometry): TArcBisectorGeometry;
-var
-  RadiusValue, ArcLength, TurnAngle, StartAngle, BisectorAngle: Double;
-begin
-  RadiusValue := Geometry.Radius;
-  ArcLength := GetArcLength(Geometry);
-  Result.Valid := False;
-  Result.Radius := RadiusValue;
-  Result.ArcLength := ArcLength;
-  Result.TurnAngle := 0;
-  Result.Center.X := 0;
-  Result.Center.Y := 0;
-  Result.StartAngle := 0;
-  Result.BisectorAngle := 0;
-  Result.BisectorOrigin.X := 0;
-  Result.BisectorOrigin.Y := 0;
-  Result.BisectorDir.X := 0;
-  Result.BisectorDir.Y := 0;
-
-  if (Abs(RadiusValue) > 1e-12) and (ArcLength > 0) then
-  begin
-    TurnAngle := ArcLength / RadiusValue;
-    if RadiusValue >= 0 then
-      StartAngle := -Pi / 2
-    else
-      StartAngle := Pi / 2;
-    BisectorAngle := StartAngle + TurnAngle / 2;
-    Result.Valid := True;
-    Result.Radius := RadiusValue;
-    Result.ArcLength := ArcLength;
-    Result.TurnAngle := TurnAngle;
-    Result.Center.X := 0;
-    Result.Center.Y := RadiusValue;
-    Result.StartAngle := StartAngle;
-    Result.BisectorAngle := BisectorAngle;
-    Result.BisectorOrigin := Result.Center;
-    Result.BisectorDir.X := Cos(BisectorAngle);
-    Result.BisectorDir.Y := Sin(BisectorAngle);
-  end;
-end;
-
-function IntegrateLinearSteerPath(const FinalSteer, PathLength: Double): TLinearSteerPath;
-var
-  Count, I: Integer;
-  T, Distance, HeadingChangePerDistance: Double;
-  Pose: TVehiclePose;
-begin
-  Count := Max(2, Ceil(48 + Abs(PathLength) * 96));
-  SetLength(Result.Points, Count);
-  if Abs(PathLength) < 1e-12 then
-    HeadingChangePerDistance := 0
-  else
-    HeadingChangePerDistance := FinalSteer / PathLength;
-  for I := 0 to Count - 1 do
-  begin
-    T := IfThen(Count = 1, 0, I / (Count - 1));
-    Distance := PathLength * T;
-    Pose := SampleVehiclePoseForSlew(0, 0, 0, Distance, HeadingChangePerDistance, PathLength, 0);
-    Result.Points[I].X := Pose.X;
-    Result.Points[I].Y := Pose.Y;
-    Result.Points[I].Heading := Pose.Angle;
-    Result.Points[I].Theta := Pose.Theta;
-  end;
-  Result.TerminalPose := SampleVehiclePoseForSlew(0, 0, 0, PathLength, HeadingChangePerDistance, PathLength, 0);
-end;
-
 function GetSimpleArcVC(const TerminalPose: TVehiclePose): TServerPoint2D;
 var
   Rear, Front, BodyDirection, SteerDirection: TServerPoint2D;
@@ -284,8 +143,8 @@ begin
   BodyDirection.Y := Sin(TerminalPose.Angle);
   Front.X := Rear.X + BodyDirection.X;
   Front.Y := Rear.Y + BodyDirection.Y;
-  SteerDirection.X := Cos(TerminalPose.Angle + TerminalPose.Theta);
-  SteerDirection.Y := Sin(TerminalPose.Angle + TerminalPose.Theta);
+  SteerDirection.X := Cos(TerminalPose.Angle + TerminalPose.SteerAngle);
+  SteerDirection.Y := Sin(TerminalPose.Angle + TerminalPose.SteerAngle);
   if not GetVehiclePerpendicularIntersection(Rear, BodyDirection, Front, SteerDirection, Result) then
   begin
     Result.X := 0;
@@ -293,368 +152,562 @@ begin
   end;
 end;
 
-function EvaluateCandidate(
-  const Geometry: TArcGeometry;
-  const Bisector: TArcBisectorGeometry;
-  const Slew, TurnDirection, PathLength: Double
-): TTraceCandidate;
-var
-  TerminalPose: TVehiclePose;
-  Path: TLinearSteerPath;
-  Vc: TServerPoint2D;
-  BodyDirection, Front: TServerPoint2D;
-  SteerDirection: TServerPoint2D;
-  SignedPositionError: Double;
-  TerminalHeading, HeadingNormalAngle, BisectorHeading: Double;
-  FinalSteer: Double;
+function IsFiniteDouble(const Value: Double): Boolean;
 begin
-  FinalSteer := TurnDirection * Slew * PathLength;
-  Result.FinalSteer := FinalSteer;
-  Result.PathLength := PathLength;
-  Result.Slew := Slew;
-  Result.SteerAtLimit := Abs(FinalSteer) >= Geometry.SteerMax - 1e-6;
-  Path := IntegrateLinearSteerPath(FinalSteer, PathLength);
-  Result.Path := Path;
-  TerminalPose := Path.TerminalPose;
-  Vc := GetSimpleArcVC(TerminalPose);
-  Result.Vc := Vc;
-
-  SignedPositionError := SignedDistanceToLine(Vc, Bisector.BisectorOrigin, Bisector.BisectorDir);
-  Result.SignedPositionError := SignedPositionError;
-  Result.PositionError := Abs(SignedPositionError);
-  TerminalHeading := TerminalPose.Angle;
-  Result.HeadingError := AngleDistanceToPerpendicular(TerminalHeading, Bisector.BisectorAngle);
-  HeadingNormalAngle := NormalizePositiveAngle(TerminalHeading + Pi / 2);
-  BisectorHeading := NormalizePositiveAngle(Bisector.BisectorAngle);
-  Result.HeadingNormalAngle := HeadingNormalAngle;
-  Result.HeadingNormalError := Abs(WrapAngle(HeadingNormalAngle - BisectorHeading));
-  Result.HeadingNormalSatisfied := Result.HeadingNormalError <= 1e-5;
-  Result.Path.TerminalPose := TerminalPose;
+  Result := (not IsNan(Value)) and (Abs(Value) < 1e300);
 end;
 
-function CandidateBetter(
-  const Candidate, CurrentBest: TTraceCandidate;
-  const Geometry: TArcGeometry;
-  const Bisector: TArcBisectorGeometry
-): Boolean;
-var
-  CandidateScore, CurrentScore: Double;
+function LimitSwtdMinimum(const Value: Double): Double;
 begin
-  CandidateScore := Abs(Candidate.SignedPositionError);
-  CurrentScore := Abs(CurrentBest.SignedPositionError);
-  if CandidateScore < CurrentScore - 1e-12 then
-    Exit(True);
-  if CandidateScore > CurrentScore + 1e-12 then
-    Exit(False);
+  if IsFiniteDouble(Value) and (Value >= MinSwtd) then
+    Result := Value
+  else
+    Result := MinSwtd;
+end;
 
-  if Candidate.PositionError < CurrentBest.PositionError - 1e-12 then
-    Exit(True);
-  if Candidate.PositionError > CurrentBest.PositionError + 1e-12 then
-    Exit(False);
+function NormalizeSlew(const Value: Double): Double;
+begin
+  if IsFiniteDouble(Value) then
+    Result := Value
+  else
+    Result := 0;
+end;
 
-  if Candidate.HeadingNormalError < CurrentBest.HeadingNormalError - 1e-12 then
-    Exit(True);
-  if Candidate.HeadingNormalError > CurrentBest.HeadingNormalError + 1e-12 then
-    Exit(False);
+function WrapAngle(const Angle: Double): Double;
+begin
+  Result := Angle;
+  while Result > Pi do
+    Result := Result - 2 * Pi;
+  while Result < -Pi do
+    Result := Result + 2 * Pi;
+end;
 
-  if Candidate.HeadingError < CurrentBest.HeadingError - 1e-12 then
-    Exit(True);
-  if Candidate.HeadingError > CurrentBest.HeadingError + 1e-12 then
-    Exit(False);
+function SignedBisectorDistance(
+  const Vc: TServerPoint2D;
+  const Bisector: TArcBisectorGeometry
+): Double;
+var
+  NormalX, NormalY, LengthValue: Double;
+  OffsetX, OffsetY: Double;
+begin
+  if not Bisector.Valid then
+    Exit(NaN);
 
-  if Abs(Candidate.SignedPositionError) < Abs(CurrentBest.SignedPositionError) - 1e-12 then
-    Exit(True);
-  if Abs(Candidate.SignedPositionError) > Abs(CurrentBest.SignedPositionError) + 1e-12 then
-    Exit(False);
+  NormalX := -Bisector.BisectorDir.Y;
+  NormalY := Bisector.BisectorDir.X;
+  LengthValue := Hypot(NormalX, NormalY);
+  if LengthValue <= 1e-12 then
+    Exit(NaN);
 
-  if Candidate.PathLength < CurrentBest.PathLength - 1e-12 then
-    Exit(True);
-  if Candidate.PathLength > CurrentBest.PathLength + 1e-12 then
-    Exit(False);
+  OffsetX := Vc.X - Bisector.Center.X;
+  OffsetY := Vc.Y - Bisector.Center.Y;
+  Result := (OffsetX * (NormalX / LengthValue)) + (OffsetY * (NormalY / LengthValue));
+end;
 
-  if Candidate.SteerAtLimit <> CurrentBest.SteerAtLimit then
-    Exit(not Candidate.SteerAtLimit);
+function SignedHeadingNormalError(
+  const TerminalPose: TVehiclePose;
+  const Bisector: TArcBisectorGeometry
+): Double;
+begin
+  if not Bisector.Valid then
+    Exit(NaN);
+  Result := WrapAngle((TerminalPose.Angle + Pi / 2) - Bisector.BisectorAngle + Pi);
+end;
 
-  if Candidate.Slew < CurrentBest.Slew - 1e-12 then
-    Exit(True);
-  if Candidate.Slew > CurrentBest.Slew + 1e-12 then
-    Exit(False);
-  Result := False;
+function PassSwtd(const Pass: TTracePass): Double;
+begin
+  Result := LimitSwtdMinimum(Pass.Swtd);
+  if not IsFiniteDouble(Result) then
+    Result := LimitSwtdMinimum(Pass.PathCenter);
+end;
+
+function ChoosePositiveRootNear(
+  const Roots: array of Double;
+  const Anchor: Double
+): Double;
+var
+  I: Integer;
+  Candidate, BestDistance, DistanceValue: Double;
+begin
+  Result := NaN;
+  BestDistance := MaxDouble;
+  for I := Low(Roots) to High(Roots) do
+  begin
+    Candidate := Roots[I];
+    if IsFiniteDouble(Candidate) and (Candidate >= MinSwtd) then
+    begin
+      DistanceValue := Abs(Candidate - Anchor);
+      if DistanceValue < BestDistance then
+      begin
+        BestDistance := DistanceValue;
+        Result := Candidate;
+      end;
+    end;
+  end;
+end;
+
+function EstimateQuadraticRoot(
+  const X0, Y0, X1, Y1, X2, Y2: Double
+): Double;
+var
+  D0, D1, D2, A, B, C, Discriminant, RootSpread: Double;
+  Roots: array[0..1] of Double;
+begin
+  Result := NaN;
+  if (Abs(X0 - X1) <= 1e-12) or (Abs(X0 - X2) <= 1e-12) or (Abs(X1 - X2) <= 1e-12) then
+    Exit;
+
+  D0 := (X0 - X1) * (X0 - X2);
+  D1 := (X1 - X0) * (X1 - X2);
+  D2 := (X2 - X0) * (X2 - X1);
+  A := (Y0 / D0) + (Y1 / D1) + (Y2 / D2);
+  B := -(Y0 * (X1 + X2) / D0) - (Y1 * (X0 + X2) / D1) - (Y2 * (X0 + X1) / D2);
+  C := (Y0 * X1 * X2 / D0) + (Y1 * X0 * X2 / D1) + (Y2 * X0 * X1 / D2);
+
+  if Abs(A) > 1e-12 then
+  begin
+    Discriminant := (B * B) - (4 * A * C);
+    if Discriminant < 0 then
+      Exit;
+    RootSpread := Sqrt(Discriminant);
+    Roots[0] := (-B - RootSpread) / (2 * A);
+    Roots[1] := (-B + RootSpread) / (2 * A);
+    Result := ChoosePositiveRootNear(Roots, X2);
+  end
+  else if Abs(B) > 1e-12 then
+  begin
+    Roots[0] := -C / B;
+    Result := ChoosePositiveRootNear(Slice(Roots, 1), X2);
+  end;
+end;
+
+function SolveQuadraticCoefficientsRootNear(
+  const ConstantValue, LinearValue, QuadraticValue, Anchor: Double
+): Double;
+var
+  Discriminant, RootSpread: Double;
+  Roots: array[0..1] of Double;
+begin
+  Result := NaN;
+  if Abs(QuadraticValue) > 1e-12 then
+  begin
+    Discriminant := (LinearValue * LinearValue) - (4 * QuadraticValue * ConstantValue);
+    if Discriminant < -1e-12 then
+      Exit;
+    if Abs(Discriminant) <= 1e-12 then
+    begin
+      Roots[0] := -LinearValue / (2 * QuadraticValue);
+      Result := ChoosePositiveRootNear(Slice(Roots, 1), Anchor);
+      Exit;
+    end;
+    RootSpread := Sqrt(Discriminant);
+    Roots[0] := (-LinearValue - RootSpread) / (2 * QuadraticValue);
+    Roots[1] := (-LinearValue + RootSpread) / (2 * QuadraticValue);
+    Result := ChoosePositiveRootNear(Roots, Anchor);
+  end
+  else if Abs(LinearValue) > 1e-12 then
+  begin
+    Roots[0] := -ConstantValue / LinearValue;
+    Result := ChoosePositiveRootNear(Slice(Roots, 1), Anchor);
+  end;
+end;
+
+procedure MultiplyPolynomialByLinear(
+  const Coefficients: array of Double;
+  const Root: Double;
+  out ResultCoefficients: array of Double
+);
+var
+  I: Integer;
+begin
+  for I := Low(ResultCoefficients) to High(ResultCoefficients) do
+    ResultCoefficients[I] := 0;
+  for I := Low(Coefficients) to High(Coefficients) do
+  begin
+    ResultCoefficients[I] := ResultCoefficients[I] - Coefficients[I] * Root;
+    ResultCoefficients[I + 1] := ResultCoefficients[I + 1] + Coefficients[I];
+  end;
+end;
+
+procedure InterpolatePolynomialCoefficients(
+  const XValues, YValues: array of Double;
+  out Coefficients: array of Double
+);
+var
+  I, J, K, Count: Integer;
+  Denominator, Scale: Double;
+  Basis, NextBasis: array[0..3] of Double;
+begin
+  Count := Length(XValues);
+  for I := Low(Coefficients) to High(Coefficients) do
+    Coefficients[I] := 0;
+
+  for I := 0 to Count - 1 do
+  begin
+    Denominator := 1;
+    for K := Low(Basis) to High(Basis) do
+      Basis[K] := 0;
+    Basis[0] := 1;
+    for J := 0 to Count - 1 do
+    begin
+      if I = J then
+        Continue;
+      Denominator := Denominator * (XValues[I] - XValues[J]);
+      MultiplyPolynomialByLinear(Slice(Basis, Count - 1), XValues[J], NextBasis);
+      Basis := NextBasis;
+    end;
+    if Abs(Denominator) <= 1e-12 then
+      Continue;
+    Scale := YValues[I] / Denominator;
+    for K := 0 to Count - 1 do
+      Coefficients[K] := Coefficients[K] + Basis[K] * Scale;
+  end;
+end;
+
+function SolveCubicRootNear(
+  const Coefficients: array of Double;
+  const Anchor: Double
+): Double;
+var
+  ConstantValue, LinearValue, QuadraticValue, CubicValue: Double;
+  A, B, C, P, Q, Discriminant, RootSpread, U, RadiusValue, AcosInput, AngleValue: Double;
+  Roots: array[0..2] of Double;
+begin
+  Result := NaN;
+  ConstantValue := Coefficients[0];
+  LinearValue := Coefficients[1];
+  QuadraticValue := Coefficients[2];
+  CubicValue := Coefficients[3];
+
+  if Abs(CubicValue) <= 1e-12 then
+  begin
+    Result := SolveQuadraticCoefficientsRootNear(ConstantValue, LinearValue, QuadraticValue, Anchor);
+    Exit;
+  end;
+
+  A := QuadraticValue / CubicValue;
+  B := LinearValue / CubicValue;
+  C := ConstantValue / CubicValue;
+  P := B - (A * A / 3);
+  Q := (2 * A * A * A / 27) - (A * B / 3) + C;
+  Discriminant := (Q * Q / 4) + (P * P * P / 27);
+
+  if Discriminant > 1e-12 then
+  begin
+    RootSpread := Sqrt(Discriminant);
+    Roots[0] := Sign((-Q / 2) + RootSpread) * Power(Abs((-Q / 2) + RootSpread), 1 / 3)
+      + Sign((-Q / 2) - RootSpread) * Power(Abs((-Q / 2) - RootSpread), 1 / 3)
+      - (A / 3);
+    Result := ChoosePositiveRootNear(Slice(Roots, 1), Anchor);
+  end
+  else if Abs(Discriminant) <= 1e-12 then
+  begin
+    U := Sign(-Q / 2) * Power(Abs(-Q / 2), 1 / 3);
+    Roots[0] := (2 * U) - (A / 3);
+    Roots[1] := (-U) - (A / 3);
+    Result := ChoosePositiveRootNear(Slice(Roots, 2), Anchor);
+  end
+  else
+  begin
+    RadiusValue := 2 * Sqrt(-P / 3);
+    AcosInput := (-Q / 2) / Sqrt(-(P * P * P) / 27);
+    if AcosInput < -1 then
+      AcosInput := -1
+    else if AcosInput > 1 then
+      AcosInput := 1;
+    AngleValue := ArcCos(AcosInput);
+    Roots[0] := (RadiusValue * Cos(AngleValue / 3)) - (A / 3);
+    Roots[1] := (RadiusValue * Cos((AngleValue + 2 * Pi) / 3)) - (A / 3);
+    Roots[2] := (RadiusValue * Cos((AngleValue + 4 * Pi) / 3)) - (A / 3);
+    Result := ChoosePositiveRootNear(Roots, Anchor);
+  end;
+end;
+
+function EstimatePassSwtd(
+  const PassIndex: Integer;
+  const Passes: array of TTracePass;
+  const FallbackSwtd: Double
+): Double;
+var
+  PreviousSwtd, BasePerr, FirstSwtd, SecondSwtd, DeltaError, EstimatedSwtd: Double;
+  XValues, YValues, Coefficients: array[0..3] of Double;
+  I, StartIndex, J, K: Integer;
+  Distinct: Boolean;
+begin
+  if PassIndex > 0 then
+    PreviousSwtd := PassSwtd(Passes[PassIndex - 1])
+  else
+    PreviousSwtd := LimitSwtdMinimum(FallbackSwtd);
+
+  Result := PreviousSwtd;
+  if PassIndex = 0 then
+    Exit;
+
+  if PassIndex = 1 then
+  begin
+    BasePerr := Passes[PassIndex - 1].PErr;
+    if BasePerr > 0 then
+      Exit(LimitSwtdMinimum(PreviousSwtd * 0.5));
+    if BasePerr < 0 then
+      Exit(LimitSwtdMinimum(PreviousSwtd * 2.0));
+  end;
+
+  if PassIndex = 2 then
+  begin
+    FirstSwtd := PassSwtd(Passes[0]);
+    SecondSwtd := PassSwtd(Passes[1]);
+    DeltaError := Passes[1].PErr - Passes[0].PErr;
+    if IsFiniteDouble(FirstSwtd) and IsFiniteDouble(SecondSwtd) and IsFiniteDouble(Passes[0].PErr)
+      and IsFiniteDouble(Passes[1].PErr) and (Abs(DeltaError) > 1e-12) then
+    begin
+      EstimatedSwtd := SecondSwtd - (Passes[1].PErr * (SecondSwtd - FirstSwtd) / DeltaError);
+      if IsFiniteDouble(EstimatedSwtd) then
+        Exit(LimitSwtdMinimum(EstimatedSwtd));
+    end;
+  end;
+
+  if PassIndex = 3 then
+  begin
+    EstimatedSwtd := EstimateQuadraticRoot(
+      PassSwtd(Passes[0]), Passes[0].PErr,
+      PassSwtd(Passes[1]), Passes[1].PErr,
+      PassSwtd(Passes[2]), Passes[2].PErr
+    );
+    if IsFiniteDouble(EstimatedSwtd) then
+      Exit(LimitSwtdMinimum(EstimatedSwtd));
+  end;
+
+  if PassIndex >= 4 then
+  begin
+    StartIndex := PassIndex - 4;
+    Distinct := True;
+    for I := 0 to 3 do
+    begin
+      XValues[I] := PassSwtd(Passes[StartIndex + I]);
+      YValues[I] := Passes[StartIndex + I].PErr;
+      if (not IsFiniteDouble(XValues[I])) or (not IsFiniteDouble(YValues[I])) then
+        Distinct := False;
+    end;
+    for J := 0 to 3 do
+      for K := J + 1 to 3 do
+        if Abs(XValues[J] - XValues[K]) <= 1e-12 then
+          Distinct := False;
+    if Distinct then
+    begin
+      InterpolatePolynomialCoefficients(XValues, YValues, Coefficients);
+      EstimatedSwtd := SolveCubicRootNear(Coefficients, XValues[3]);
+      if IsFiniteDouble(EstimatedSwtd) then
+        Exit(LimitSwtdMinimum(EstimatedSwtd));
+    end;
+  end;
+end;
+
+function MakeEstimatorPass(
+  const PassIndex, HEst: Integer;
+  const Swtd, DesiredSteerAngle, TargetRadius, TargetDeltaPsi, SteerMax: Double;
+  const VehicleX, VehicleY, VehicleAngle: Double;
+  const PreviousPErr: Double
+): TTracePass;
+var
+  Hrt: Double;
+  LowSolution: TServerSimpleArcSolution;
+  VehicleVector: TVehicleVector;
+  ArcGeometry: TArcGeometry;
+  Bisector: TArcBisectorGeometry;
+begin
+  Hrt := NormalizeSlew(DesiredSteerAngle / LimitSwtdMinimum(Swtd));
+  LowSolution := SolveSimpleArcServer(Swtd, DesiredSteerAngle, SteerMax, Hrt, VehicleX, VehicleY, VehicleAngle);
+
+  VehicleVector.X := VehicleX;
+  VehicleVector.Y := VehicleY;
+  VehicleVector.Angle := VehicleAngle;
+  VehicleVector.Length := 1;
+  ArcGeometry.Radius := TargetRadius;
+  ArcGeometry.HeadingChange := TargetDeltaPsi;
+  ArcGeometry.MaxHeadingChange := Pi * 2;
+  Bisector := GetCurrentTurnBisectorGeometry(VehicleVector, ArcGeometry);
+
+  Result := Default(TTracePass);
+  Result.HEst := HEst;
+  Result.Pass := PassIndex;
+  Result.SteerCenter := DesiredSteerAngle;
+  Result.PathCenter := LimitSwtdMinimum(Swtd);
+  Result.SteerSpan := 0;
+  Result.PathSpan := 0;
+  Result.DesiredSteerAngle := DesiredSteerAngle;
+  Result.Swtd := LimitSwtdMinimum(Swtd);
+  Result.HeadingChange := DesiredSteerAngle;
+  Result.HeadingChangePerDistance := Hrt;
+  Result.Vc := LowSolution.Vc;
+  Result.TerminalPose := LowSolution.TerminalPose;
+  Result.PErr := SignedBisectorDistance(Result.Vc, Bisector);
+  Result.HErr := SignedHeadingNormalError(Result.TerminalPose, Bisector);
+  if PassIndex = 0 then
+    Result.DPErr := Result.PErr
+  else
+    Result.DPErr := PreviousPErr - Result.PErr;
 end;
 
 function SolveSimpleArcServer(
-  const Radius, DeltaPsi, SteerMax, InitialSl: Double;
+  const Swtd, HeadingChange, SteerMax, HeadingChangePerDistanceSeed: Double;
   const VehicleX, VehicleY, VehicleAngle: Double
 ): TServerSimpleArcSolution;
 var
-  Geometry: TArcGeometry;
-  Bisector: TArcBisectorGeometry;
-  TurnDirection: Double;
-  InitialPathLength, MaxPathLength, MaxSteer, MaxPathBySteer: Double;
-  PositionTolerance, HeadingTolerance, HeadingNormalTolerance: Double;
-  SteerCenter, PathCenter, SteerSpan, PathSpan: Double;
-  DesiredSlew, FixedSlew: Double;
-  Best: TTraceCandidate;
-  HasBest: Boolean;
-  Trace: array of TTracePass;
-  PassCount, PathSamples, Pass, J, I: Integer;
-  Shrink, PathFloor: Double;
-  PathSearchBest, SteerSearchBest: TTraceCandidate;
-  PathSearchLeft, PathSearchRight, SteerSearchLeft, SteerSearchRight: Double;
-  PathLength, FinalSteer: Double;
-  PathBest, SteerBest: TTraceCandidate;
-  PathBestValid, SteerBestValid: Boolean;
-  Count: Integer;
-  LocalBestX, LocalBestY: Double;
-  PathLeft, PathRight, SteerLeft, SteerRight, Width, Step, XValue, YValue: Double;
-
-  function SearchPathCandidates(const FixedSlew, TurnDir, Center, Span: Double; out BestCandidate: TTraceCandidate; out LeftValue, RightValue: Double): Boolean;
-  var
-    Samples, Index: Integer;
-    PathMin, PathMax, PathT: Double;
-    Candidate, PrevCandidate, MidCandidate: TTraceCandidate;
-    BestLocal: Boolean;
-    HasPrev, HasBracket: Boolean;
-    LeftCandidate, RightCandidate: TTraceCandidate;
-    LeftError, RightError, MidError: Double;
-    Iteration: Integer;
-  begin
-    Samples := Max(5, PathSamples);
-    PathMin := Max(1e-9, PathFloor);
-    PathMax := Max(PathMin, MaxPathBySteer);
-    LeftValue := ClampDouble(Center - Span, PathMin, PathMax);
-    RightValue := ClampDouble(Center + Span, PathMin, PathMax);
-    BestLocal := False;
-    HasPrev := False;
-    HasBracket := False;
-    BestCandidate := Default(TTraceCandidate);
-    for Index := 0 to Samples - 1 do
-    begin
-      PathT := IfThen(Samples = 1, 0, Index / (Samples - 1));
-      PathLength := LeftValue + (RightValue - LeftValue) * PathT;
-      Candidate := EvaluateCandidate(Geometry, Bisector, FixedSlew, TurnDir, PathLength);
-      Candidate.PathLength := PathLength;
-      if (not BestLocal) or CandidateBetter(Candidate, BestCandidate, Geometry, Bisector) then
-      begin
-        BestCandidate := Candidate;
-        BestLocal := True;
-      end;
-      if HasPrev then
-      begin
-        if (PrevCandidate.SignedPositionError = 0) or (Candidate.SignedPositionError = 0) then
-        begin
-          if Abs(Candidate.SignedPositionError) <= Abs(PrevCandidate.SignedPositionError) then
-          begin
-            BestCandidate := Candidate;
-            BestLocal := True;
-          end
-          else
-          begin
-            BestCandidate := PrevCandidate;
-            BestLocal := True;
-          end;
-          HasBracket := True;
-          Break;
-        end;
-        if (PrevCandidate.SignedPositionError < 0) <> (Candidate.SignedPositionError < 0) then
-        begin
-          LeftValue := PrevCandidate.PathLength;
-          RightValue := Candidate.PathLength;
-          LeftCandidate := PrevCandidate;
-          RightCandidate := Candidate;
-          LeftError := PrevCandidate.SignedPositionError;
-          RightError := Candidate.SignedPositionError;
-          HasBracket := True;
-          Break;
-        end;
-      end;
-      PrevCandidate := Candidate;
-      HasPrev := True;
-    end;
-
-    if HasBracket and (LeftError * RightError < 0) then
-    begin
-      for Iteration := 0 to 15 do
-      begin
-        PathLength := (LeftValue + RightValue) * 0.5;
-        MidCandidate := EvaluateCandidate(Geometry, Bisector, FixedSlew, TurnDir, PathLength);
-        MidCandidate.PathLength := PathLength;
-        MidError := MidCandidate.SignedPositionError;
-        if (not BestLocal) or CandidateBetter(MidCandidate, BestCandidate, Geometry, Bisector) then
-        begin
-          BestCandidate := MidCandidate;
-          BestLocal := True;
-        end;
-        if Abs(MidError) <= 1e-7 then
-          Break;
-        if (LeftError < 0) <> (MidError < 0) then
-        begin
-          RightValue := PathLength;
-          RightCandidate := MidCandidate;
-          RightError := MidError;
-        end
-        else
-        begin
-          LeftValue := PathLength;
-          LeftCandidate := MidCandidate;
-          LeftError := MidError;
-        end;
-      end;
-    end;
-
-    Result := BestLocal;
-  end;
-
+  TerminalPose: TVehiclePose;
+  HeadingChangePerDistance: Double;
+  SafeSwtd: Double;
+  Vc: TServerPoint2D;
 begin
-  Geometry := GetSimpleArcGeometry(Radius, DeltaPsi, SteerMax);
-  Bisector := GetSimpleArcBisectorGeometry(Geometry);
+  SafeSwtd := Swtd;
+  if Abs(SafeSwtd) < 1e-12 then
+    SafeSwtd := 0;
+
+  if Abs(HeadingChangePerDistanceSeed) > 1e-12 then
+    HeadingChangePerDistance := HeadingChangePerDistanceSeed
+  else if Abs(SafeSwtd) > 1e-12 then
+    HeadingChangePerDistance := HeadingChange / SafeSwtd
+  else
+    HeadingChangePerDistance := 0;
+
+  if (HeadingChangePerDistance <> HeadingChangePerDistance) or (Abs(HeadingChangePerDistance) > 1e300) then
+    HeadingChangePerDistance := 0;
+
+  TerminalPose := SampleVehiclePoseForSlew(
+    VehicleX,
+    VehicleY,
+    VehicleAngle,
+    SafeSwtd,
+    HeadingChangePerDistance,
+    Abs(SafeSwtd),
+    0
+  );
+  Vc := GetSimpleArcVC(TerminalPose);
+
   Result := Default(TServerSimpleArcSolution);
-  Result.Radius := Radius;
-  Result.ArcLength := Abs(Radius) * Abs(DeltaPsi);
-  Result.S := Result.ArcLength;
-  Result.Sl := IfThen(Abs(Radius) > 1e-12, 1 / Radius, 0);
-  Result.TurnAngle := DeltaPsi;
-  Result.FinalHeading := 0;
-  Result.CurveLength := Result.ArcLength;
-  Result.TerminalPose.X := VehicleX;
-  Result.TerminalPose.Y := VehicleY;
-  Result.TerminalPose.Angle := VehicleAngle;
-  Result.TerminalPose.Theta := 0;
-  Result.TerminalPose.Radius := Radius;
-  Result.TerminalPose.CurveLength := Result.ArcLength;
-  Result.FinalPose := Result.TerminalPose;
-  Result.TerminalCoord.X := VehicleX;
-  Result.TerminalCoord.Y := VehicleY;
-  Result.TerminalCoord.Psi := VehicleAngle;
+  Result.Success := True;
+  Result.EdgeCase := False;
+  Result.EdgeCaseReason := '';
+  Result.Radius := 0;
+  Result.ArcLength := Abs(SafeSwtd);
+  Result.S := SafeSwtd;
+  Result.Sl := HeadingChangePerDistance;
+  Result.TurnAngle := HeadingChange;
+  Result.FinalHeading := TerminalPose.Angle;
+  Result.CurveLength := Abs(SafeSwtd);
+  Result.PositionError := 0;
+  Result.HeadingError := 0;
+  Result.HeadingNormalAngle := NormalizePositiveAngle(TerminalPose.Angle + Pi / 2);
+  Result.HeadingNormalError := 0;
+  Result.HeadingNormalSatisfied := True;
+  Result.Vc := Vc;
+  Result.TerminalPose := TerminalPose;
+  Result.FinalPose := TerminalPose;
+  Result.TerminalCoord.X := TerminalPose.X;
+  Result.TerminalCoord.Y := TerminalPose.Y;
+  Result.TerminalCoord.Psi := TerminalPose.Angle;
   Result.TerminalCoord.Length := 1;
   Result.TerminalCoord.LabelText := 'Rp';
   Result.TerminalCoord.Color := '#7dd3fc';
 
-  if not Bisector.Valid then
+  SetLength(Result.PathPoints, 1);
+  Result.PathPoints[0].X := TerminalPose.X;
+  Result.PathPoints[0].Y := TerminalPose.Y;
+  Result.PathPoints[0].Heading := TerminalPose.Angle;
+  Result.PathPoints[0].SteerAngle := TerminalPose.SteerAngle;
+
+  SetLength(Result.Passes, 1);
+  Result.Passes[0].Pass := 0;
+  Result.Passes[0].HEst := 0;
+  Result.Passes[0].SteerCenter := HeadingChange;
+  Result.Passes[0].PathCenter := SafeSwtd;
+  Result.Passes[0].SteerSpan := 0;
+  Result.Passes[0].PathSpan := 0;
+  Result.Passes[0].DesiredSteerAngle := HeadingChange;
+  Result.Passes[0].Swtd := SafeSwtd;
+  Result.Passes[0].HeadingChange := HeadingChange;
+  Result.Passes[0].HeadingChangePerDistance := HeadingChangePerDistance;
+  Result.Passes[0].PErr := 0;
+  Result.Passes[0].DPErr := 0;
+  Result.Passes[0].HErr := 0;
+  Result.Passes[0].Vc := Vc;
+  Result.Passes[0].TerminalPose := TerminalPose;
+end;
+
+function SolveSimpleArcEstimatorServer(
+  const TargetRadius, TargetDeltaPsi, SeedSwtd, DesiredSteerAngle, SteerMax: Double;
+  const VehicleX, VehicleY, VehicleAngle: Double;
+  const HEst: Integer
+): TServerSimpleArcSolution;
+const
+  MaxPassCount = 8;
+var
+  PassIndex: Integer;
+  EstimatedSwtd, PreviousPErr, SafeSeedSwtd, SafeDesiredSteerAngle: Double;
+  LatestPass: TTracePass;
+begin
+  SafeSeedSwtd := LimitSwtdMinimum(SeedSwtd);
+  SafeDesiredSteerAngle := DesiredSteerAngle;
+  Result := SolveSimpleArcServer(SafeSeedSwtd, SafeDesiredSteerAngle, SteerMax, NormalizeSlew(SafeDesiredSteerAngle / SafeSeedSwtd), VehicleX, VehicleY, VehicleAngle);
+  Result.Radius := TargetRadius;
+  SetLength(Result.Passes, 0);
+  PreviousPErr := NaN;
+  for PassIndex := 0 to MaxPassCount - 1 do
   begin
-    Result.Success := False;
-    Exit;
-  end;
-
-  TurnDirection := IfThen(Radius >= 0, 1.0, -1.0);
-  InitialPathLength := Max(Max(Abs(Result.ArcLength), Abs(Radius) * 1.5), 0.5);
-  MaxPathLength := Max(Max(Abs(Result.ArcLength) * 8, Abs(Radius) * 12), 8);
-  MaxSteer := Max(DegToRad(45), Min(Abs(SteerMax), Pi / 2 - 1e-9));
-  DesiredSlew := Abs(InitialSl);
-  if DesiredSlew <= 1e-12 then
-    DesiredSlew := Pi / 4;
-  FixedSlew := DesiredSlew;
-  MaxPathBySteer := IfThen(DesiredSlew > 1e-12, MaxSteer / DesiredSlew, MaxPathLength);
-  PositionTolerance := 1e-3;
-  HeadingTolerance := 1e-5;
-  HeadingNormalTolerance := 1e-5;
-  SteerCenter := TurnDirection * DesiredSlew * InitialPathLength;
-  PathCenter := ClampDouble(InitialPathLength, 1e-9, Min(MaxPathLength, MaxPathBySteer));
-  SteerSpan := 0;
-  PathSpan := Max(Max(Abs(InitialPathLength) * 0.75, Abs(Result.ArcLength)), 0.75);
-  SetLength(Trace, 0);
-  HasBest := False;
-  PassCount := 5;
-  PathSamples := 9;
-  Shrink := 0.25;
-  PathFloor := 1e-3;
-  Best := Default(TTraceCandidate);
-
-  for J := 0 to 1 do
-  begin
-    if J = 1 then
-    begin
-      PassCount := 10;
-      PathSamples := 21;
-      Shrink := 0.25;
-      PathFloor := 1e-7;
-    end;
-
-    for Pass := 0 to PassCount - 1 do
-    begin
-      PathBestValid := SearchPathCandidates(FixedSlew, TurnDirection, PathCenter, PathSpan, PathSearchBest, PathSearchLeft, PathSearchRight);
-      if PathBestValid then
-      begin
-        PathCenter := PathSearchBest.PathLength;
-        if PathSearchBest.PositionError <= PositionTolerance * 4 then
-          PathSpan := Max((PathSearchRight - PathSearchLeft) * Shrink, PathFloor)
-        else
-          PathSpan := Min(Min(MaxPathLength, MaxPathBySteer), Max(PathSearchBest.PathLength * 0.5, PathSpan * 1.25));
-      end;
-      SteerCenter := TurnDirection * FixedSlew * PathCenter;
-      SteerSpan := 0;
-      SteerBestValid := PathBestValid;
-      if SteerBestValid then
-      begin
-        SteerSearchBest := PathSearchBest;
-        SteerSearchBest.FinalSteer := TurnDirection * FixedSlew * SteerSearchBest.PathLength;
-        if (not HasBest) or CandidateBetter(SteerSearchBest, Best, Geometry, Bisector) then
-        begin
-          Best := SteerSearchBest;
-          HasBest := True;
-        end;
-      end;
-
-      SetLength(Trace, Length(Trace) + 1);
-      Trace[High(Trace)].Pass := Length(Trace) - 1;
-      Trace[High(Trace)].SteerCenter := SteerCenter;
-      Trace[High(Trace)].PathCenter := PathCenter;
-      Trace[High(Trace)].SteerSpan := SteerSpan;
-      Trace[High(Trace)].PathSpan := PathSpan;
-      Trace[High(Trace)].PathBestValid := PathBestValid;
-      Trace[High(Trace)].SteerBestValid := SteerBestValid;
-      if PathBestValid then
-        Trace[High(Trace)].PathBest := PathSearchBest;
-      if SteerBestValid then
-      begin
-        Trace[High(Trace)].SteerBest := SteerSearchBest;
-        Trace[High(Trace)].TerminalPose := SteerSearchBest.Path.TerminalPose;
-      end;
-
-      if (not HasBest) then
-        Break;
-      if (Best.PositionError <= PositionTolerance) and (Best.HeadingNormalSatisfied) and (Best.HeadingError <= HeadingTolerance) then
-        Break;
-    end;
-
-    if HasBest and (Best.PositionError <= PositionTolerance) and (Best.HeadingNormalSatisfied) and (Best.HeadingError <= HeadingTolerance) then
+    EstimatedSwtd := EstimatePassSwtd(PassIndex, Result.Passes, SafeSeedSwtd);
+    LatestPass := MakeEstimatorPass(
+      PassIndex,
+      HEst,
+      EstimatedSwtd,
+      SafeDesiredSteerAngle,
+      TargetRadius,
+      TargetDeltaPsi,
+      SteerMax,
+      VehicleX,
+      VehicleY,
+      VehicleAngle,
+      PreviousPErr
+    );
+    SetLength(Result.Passes, Length(Result.Passes) + 1);
+    Result.Passes[High(Result.Passes)] := LatestPass;
+    PreviousPErr := LatestPass.PErr;
+    if (IsFiniteDouble(LatestPass.PErr) and (Abs(LatestPass.PErr) < 0.001))
+      or (IsFiniteDouble(LatestPass.DPErr) and (Abs(LatestPass.DPErr) < 0.001)) then
       Break;
   end;
 
-  if not HasBest then
+  if Length(Result.Passes) > 0 then
   begin
-    Result.Success := False;
-    Result.Passes := Trace;
-    Exit;
+    LatestPass := Result.Passes[High(Result.Passes)];
+    Result.S := LatestPass.Swtd;
+    Result.Sl := LatestPass.HeadingChangePerDistance;
+    Result.TurnAngle := SafeDesiredSteerAngle;
+    Result.FinalHeading := LatestPass.TerminalPose.Angle;
+    Result.CurveLength := LatestPass.Swtd;
+    Result.PositionError := Abs(LatestPass.PErr);
+    Result.HeadingError := Abs(LatestPass.HErr);
+    Result.HeadingNormalAngle := NormalizePositiveAngle(LatestPass.TerminalPose.Angle + Pi / 2);
+    Result.HeadingNormalError := Abs(LatestPass.HErr);
+    Result.HeadingNormalSatisfied := IsFiniteDouble(LatestPass.HErr) and (Abs(LatestPass.HErr) <= 1e-5);
+    Result.Vc := LatestPass.Vc;
+    Result.TerminalPose := LatestPass.TerminalPose;
+    Result.FinalPose := LatestPass.TerminalPose;
+    Result.TerminalCoord.X := LatestPass.TerminalPose.X;
+    Result.TerminalCoord.Y := LatestPass.TerminalPose.Y;
+    Result.TerminalCoord.Psi := LatestPass.TerminalPose.Angle;
+    Result.TerminalCoord.Length := 1;
+    Result.TerminalCoord.LabelText := 'Rp';
+    Result.TerminalCoord.Color := '#7dd3fc';
+    SetLength(Result.PathPoints, 1);
+    Result.PathPoints[0].X := LatestPass.TerminalPose.X;
+    Result.PathPoints[0].Y := LatestPass.TerminalPose.Y;
+    Result.PathPoints[0].Heading := LatestPass.TerminalPose.Angle;
+    Result.PathPoints[0].SteerAngle := LatestPass.TerminalPose.SteerAngle;
   end;
 
-  Result.Success := Best.PositionError <= PositionTolerance;
-  Result.EdgeCase := (Abs(Best.FinalSteer) >= MaxSteer - 1e-6) and (Best.PositionError > PositionTolerance);
-  if Result.EdgeCase then
-    Result.EdgeCaseReason := 'steer-max-reached-before-bisector'
-  else
-    Result.EdgeCaseReason := '';
-  Result.S := Best.PathLength;
-  Result.Sl := IfThen(Best.PathLength <> 0, Best.FinalSteer / Best.PathLength, 0);
-  Result.TurnAngle := Best.FinalSteer;
-  Result.FinalHeading := Best.Path.TerminalPose.Angle;
-  Result.CurveLength := Best.PathLength;
-  Result.PositionError := Best.PositionError;
-  Result.HeadingError := Best.HeadingError;
-  Result.HeadingNormalAngle := Best.HeadingNormalAngle;
-  Result.HeadingNormalError := Best.HeadingNormalError;
-  Result.HeadingNormalSatisfied := Best.HeadingNormalSatisfied;
-  Result.Vc := Best.Vc;
-  Result.TerminalPose := Best.Path.TerminalPose;
-  Result.FinalPose := Best.Path.TerminalPose;
-  Result.PathPoints := Best.Path.Points;
-  Result.TerminalCoord.X := Best.Path.TerminalPose.X;
-  Result.TerminalCoord.Y := Best.Path.TerminalPose.Y;
-  Result.TerminalCoord.Psi := Best.Path.TerminalPose.Angle;
-  Result.TerminalCoord.Length := 1;
-  Result.TerminalCoord.LabelText := 'Rp';
-  Result.TerminalCoord.Color := '#7dd3fc';
-  Result.Passes := Trace;
+  Result.Success := True;
+  Result.EdgeCase := False;
+  Result.EdgeCaseReason := '';
+  Result.Radius := TargetRadius;
 end;
 
 end.

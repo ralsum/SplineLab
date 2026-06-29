@@ -1,5 +1,7 @@
 unit SimpleArcSolver;
 
+{$mode delphi}
+
 interface
 
 uses
@@ -406,7 +408,7 @@ begin
       Rear,
       EndPose.Angle,
       Front,
-      EndPose.Angle + EndPose.Theta,
+      EndPose.Angle + EndPose.SteerAngle,
       CorPoint
     ) then
     begin
